@@ -525,8 +525,12 @@ class HUD:
         for i, line in enumerate(stats):
             s = self.font_small.render(line, True, (200, 160, 160))
             surface.blit(s, s.get_rect(center=(cx, cy - 10 + i * 26)))
-        sub = self.font_sub.render("Press ENTER to return to Research Lab", True, (200, 160, 160))
-        surface.blit(sub, sub.get_rect(center=(cx, cy + 140)))
+        if self.scene._session_saving:
+            sv = self.font_sub.render("Saving session...", True, (255, 200, 60))
+            surface.blit(sv, sv.get_rect(center=(cx, cy + 140)))
+        else:
+            sub = self.font_sub.render("Press ENTER to return to Research Lab", True, (200, 160, 160))
+            surface.blit(sub, sub.get_rect(center=(cx, cy + 140)))
 
     def _draw_victory(self, surface, sw, sh):
         cx, cy = sw // 2, sh // 2
@@ -543,8 +547,12 @@ class HUD:
         for i, line in enumerate(stats):
             s = self.font_small.render(line, True, (255, 230, 100))
             surface.blit(s, s.get_rect(center=(cx, cy - 10 + i * 26)))
-        sub = self.font_sub.render("Press ENTER to return to Research Lab", True, (200, 200, 160))
-        surface.blit(sub, sub.get_rect(center=(cx, cy + 140)))
+        if self.scene._session_saving:
+            sv = self.font_sub.render("Saving session...", True, (255, 200, 60))
+            surface.blit(sv, sv.get_rect(center=(cx, cy + 140)))
+        else:
+            sub = self.font_sub.render("Press ENTER to return to Research Lab", True, (200, 200, 160))
+            surface.blit(sub, sub.get_rect(center=(cx, cy + 140)))
 
     def _draw_paused(self, surface, sw, sh):
         overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)

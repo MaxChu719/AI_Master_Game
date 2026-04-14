@@ -203,7 +203,8 @@ class BattleScene(BaseScene):
         self.latest_archer_avg_reward   = 0.0  # EMA of stored transition rewards (archer)
 
         # Async checkpoint saving state
-        self._saving = False
+        self._saving         = False   # wave-end checkpoint save in progress
+        self._session_saving = False   # session-end buffer snapshot save in progress
 
         # Minion envs (list per agent role)
         self.fighter_envs: list[MinionEnv] = []
@@ -500,7 +501,8 @@ class BattleScene(BaseScene):
             else:
                 self.game_manager.pop_scene()
         elif key == pygame.K_RETURN:
-            if self.wave_system.state in (WaveState.GAME_OVER, WaveState.VICTORY):
+            if (self.wave_system.state in (WaveState.GAME_OVER, WaveState.VICTORY)
+                    and not self._session_saving):
                 self.game_manager.pop_scene()
         elif key == pygame.K_r:
             self.fighter_agent.reset_brain()
@@ -891,7 +893,7 @@ class BattleScene(BaseScene):
     # ── Async checkpoint save ─────────────────────────────────────────────
 
     def _save_checkpoints_async(self):
-        """Save model checkpoints and replay buffers in a background thread.
+        """Save model checkpoints (only) in a background thread after each wave.
         Sets self._saving = True while running; skipped if a save is already in progress."""
         import threading
         if self._saving:
@@ -908,8 +910,6 @@ class BattleScene(BaseScene):
             try:
                 fa.save_checkpoint(gm.brain_path(name, "fighter"))
                 aa.save_checkpoint(gm.brain_path(name, "archer"))
-                fa.save_buffer(gm.buffer_path(name, "fighter"))
-                aa.save_buffer(gm.buffer_path(name, "archer"))
             finally:
                 self._saving = False
 
@@ -955,19 +955,35 @@ class BattleScene(BaseScene):
         ar["shots_hit"]         = ar.get("shots_hit",         0) + self.archer_arrow_hits
         ar["max_waves_survived"] = max(ar.get("max_waves_survived", 0), self.waves_survived)
 
+        # Increment session indices before spawning save thread, then write JSON
+        name = self.game_manager.player_name
+        sd   = self.game_manager.save_data
+        f_idx = sd.get("fighter_session_idx", 0)
+        a_idx = sd.get("archer_session_idx",  0)
+        sd["fighter_session_idx"] = f_idx + 1
+        sd["archer_session_idx"]  = a_idx + 1
         self.game_manager.save_game()
 
-        # Save brain checkpoints and buffer (synchronous at session end)
-        name = self.game_manager.player_name
+        # Save brain checkpoints + session buffer snapshots asynchronously.
+        # Priority extraction over the full buffer can be slow, so we do it in
+        # a background thread and show a "Saving session..." indicator until done.
         if name:
-            self.fighter_agent.save_checkpoint(
-                self.game_manager.brain_path(name, "fighter"))
-            self.archer_agent.save_checkpoint(
-                self.game_manager.brain_path(name, "archer"))
-            self.fighter_agent.save_buffer(
-                self.game_manager.buffer_path(name, "fighter"))
-            self.archer_agent.save_buffer(
-                self.game_manager.buffer_path(name, "archer"))
+            import threading
+            self._session_saving = True
+            fa = self.fighter_agent
+            aa = self.archer_agent
+            gm = self.game_manager
+
+            def _do_session_save():
+                try:
+                    fa.save_checkpoint(gm.brain_path(name, "fighter"))
+                    aa.save_checkpoint(gm.brain_path(name, "archer"))
+                    fa.save_buffer_session(gm.buffer_folder(name, "fighter"), f_idx)
+                    aa.save_buffer_session(gm.buffer_folder(name, "archer"),  a_idx)
+                finally:
+                    self._session_saving = False
+
+            threading.Thread(target=_do_session_save, daemon=True).start()
 
     # ── Draw ─────────────────────────────────────────────────────────────
 

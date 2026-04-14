@@ -490,11 +490,10 @@ class DQNAgent:
         # Soft (Polyak) target update every step: θ_target ← τ·θ + (1-τ)·θ_target
         # Returns {"loss": float}
 
-    def resize_buffer(self, new_size): ...   # Replaces SumTree, preserves recent transitions
     def save_checkpoint(self, path): ...   # model weights + optimizer only (no buffer)
-    def save_buffer(self, path): ...       # PER buffer → separate {name}_{role}_buffer.pt
+    def save_buffer_session(self, folder: str, session_idx: int): ...  # top-N by priority → folder/session_{idx:04d}.pt
     def load_checkpoint(self, path): ...   # try/except for architecture mismatch; backward-compat loads embedded buffer from old saves
-    def load_buffer(self, path): ...       # loads buffer from separate file
+    def load_buffer_sessions(self, folder: str): ...  # loads all session_*.pt files, inserts at max priority
 ```
 
 ### C51 Bellman Projection
@@ -516,7 +515,7 @@ Both `DQNAgent` instances live on `GameManager`:
 - `game_manager.fighter_agent` — shared by all deployed fighters
 - `game_manager.archer_agent`  — shared by all deployed archers
 
-`GameManager.init_agents()` creates agents with the correct buffer size (from ai_master upgrades) and loads checkpoints if a save exists. This is called by both `new_game()` and `load_save()`.
+`GameManager.init_agents()` creates agents and loads checkpoints + session buffer snapshots if a save exists. This is called by both `new_game()` and `load_save()`.
 
 ### Preset Policy (Warmup Exploration Fallback)
 
@@ -571,11 +570,56 @@ From the ResearchLab AI Master tab, the player can run off-policy training on th
 - Cost = `max(1, round(iterations × 0.01))` coins — 10 coins per 1 000 iterations (configurable via `config.json → memory_replay.cost_per_iteration`)
 - Launches a daemon thread that calls `agent.train_step()` repeatedly
 - A **live progress bar** (0–100%) is shown while training runs
-- After training, model checkpoints + replay buffers are saved in the same thread; a **"Saving checkpoints..."** indicator is shown during the save
+- After training, **only model checkpoints are saved** (fast); replay buffer is not re-serialized here
 - When save completes, result is shown: `F  loss:X.XXXX  avg rew:X.XXX` / `A  loss:X.XXXX  avg rew:X.XXX`
-- Buffer size is upgradeable (up to +50 000 transitions)
-- **Buffer upgrade preserves data**: `DQNAgent.resize_buffer()` copies existing transitions into the new larger buffer rather than clearing it
-- **Buffer saved separately**: `save_buffer(path)` writes the PER buffer to `{name}_{role}_buffer.pt`; `load_buffer(path)` re-inserts transitions on load. The model checkpoint no longer embeds the buffer (backward-compat: old checkpoints that embedded a buffer are still loaded correctly)
+
+### Session-Based Replay Buffer Storage
+
+The replay buffer is persisted as a **folder of per-session snapshot files** — one file written at game-over per role:
+
+```
+data/saves/
+├── {name}.json                      ← includes fighter_session_idx, archer_session_idx
+├── {name}_fighter.pt                ← model checkpoint
+├── {name}_archer.pt
+├── {name}_fighter_buffer/           ← session snapshot folder
+│   ├── session_0001.pt              ← oldest retained session
+│   ├── session_0002.pt
+│   └── session_0003.pt              ← most recent session (just written)
+└── {name}_archer_buffer/
+    └── ...
+```
+
+**Saving (game-over only):**
+- `DQNAgent.save_buffer_session(folder, session_idx)` — extracts the top `max_session_transitions` (default 10,000) transitions by PER priority from the in-memory buffer, serializes as `session_{idx:04d}.pt`
+- If the folder already contains `max_buffer_sessions` (default 10) files, the oldest is deleted before writing the new one
+- `session_idx` is read from the save JSON (`fighter_session_idx` / `archer_session_idx`) and incremented after each write
+- No buffer save occurs after individual waves or after Memory Replay — only model checkpoints are saved then
+
+**Loading (game load):**
+- `DQNAgent.load_buffer_sessions(folder)` — scans the folder for all `session_*.pt` files, sorts ascending, inserts each into the in-memory PER buffer in order (oldest first)
+- Inserted with **max priority** (stale priorities discarded; priorities re-ranked during training)
+- When total loaded transitions exceed the in-memory buffer capacity, the ring buffer naturally evicts the oldest, preserving the most recent sessions
+
+**Config keys (`config.json → memory_buffer`):**
+```json
+{
+  "max_session_transitions": 10000,
+  "max_buffer_sessions": 10
+}
+```
+
+**DQNAgent interface additions:**
+```python
+def save_buffer_session(self, folder: str, session_idx: int): ...
+    # Extracts top min(max_session_transitions, buffer_size) transitions by PER priority,
+    # writes to folder/session_{idx:04d}.pt, deletes oldest if folder > max_buffer_sessions
+
+def load_buffer_sessions(self, folder: str): ...
+    # Reads all session_*.pt files in sorted order, inserts into PER at max priority
+```
+
+`GameManager.buffer_folder(name, role)` returns the folder path. `init_agents()` calls `load_buffer_sessions` after `load_checkpoint`.
 
 ### Memory Storage Frame Skip
 
@@ -796,7 +840,8 @@ ai_master/
 ├── ui/
 │   └── hud.py               # Full HUD: wave banner, MP bar, spell icons, boss HP, all minions
 └── data/
-    └── saves/               # JSON save files ({name}.json) + brain checkpoints ({name}_{role}.pt) + replay buffers ({name}_{role}_buffer.pt)
+    └── saves/               # JSON save files ({name}.json) + brain checkpoints ({name}_{role}.pt)
+                             # + per-role buffer folders ({name}_{role}_buffer/) containing session_000N.pt snapshots
 ```
 
 ### Systems Signatures (Updated)
@@ -843,34 +888,36 @@ numpy>=1.26.0             # Array operations
 
 ## 13. Last Implementation Notes
 
-> **Avg reward HUD, reduced replay cost, separate buffer file, async checkpoint save (completed):**
+> **Session-based memory buffer storage (design spec — pending implementation):**
 >
-> **Average reward display**
+> **Problem solved**
+> - Saving the full PER buffer after every wave was slow. The new design saves only model checkpoints mid-session and writes a single compact session snapshot at game-over.
+>
+> **Session-based buffer save/load**
+> - `DQNAgent.save_buffer_session(folder, session_idx)`: extracts top `max_session_transitions` transitions by PER priority, writes `folder/session_{idx:04d}.pt`, deletes oldest file if folder exceeds `max_buffer_sessions`.
+> - `DQNAgent.load_buffer_sessions(folder)`: reads all `session_*.pt` files sorted ascending, inserts each at max priority into the PER buffer (oldest first, so recent sessions survive ring-buffer overflow).
+> - `GameManager.buffer_folder(name, role)` returns the buffer folder path (replaces the old `buffer_path`). Folder is created on first save.
+> - `init_agents()` calls `load_buffer_sessions` after `load_checkpoint`.
+> - Save JSON gains two new keys: `fighter_session_idx` and `archer_session_idx` (monotonically incrementing, never reset).
+>
+> **Wave-end async save — model checkpoint only**
+> - `BattleScene._save_checkpoints_async()` now saves model checkpoints only (no buffer). The "Saving..." HUD indicator remains but completes much faster.
+> - `_save_run_result()` (game-over) saves model checkpoints + calls `save_buffer_session` for both agents. This is the only place the buffer is serialized.
+>
+> **Research Lab Memory Replay — model checkpoint only after training**
+> - After replay training completes, only model checkpoints are saved. Buffer is not re-serialized.
+>
+> **Config keys added (`config.json → memory_buffer`)**
+> - `max_session_transitions`: 10000 (max transitions sampled per session file)
+> - `max_buffer_sessions`: 10 (max session files retained per role)
+>
+> **Prior implementation notes (still applies):**
 > - `BattleScene` tracks an EMA (α=0.05) of the accumulated reward for each stored transition: `self.latest_avg_reward` (fighter) and `self.latest_archer_avg_reward` (archer).
-> - `hud.py _draw_ai_panel` now shows an `Avg Rew: X.XXX` line for each brain between Loss and Buf lines.
-> - Memory Replay result now shows two lines: `F  loss:X.XXXX  avg rew:X.XXX` and `A  loss:X.XXXX  avg rew:X.XXX`. Requires `train_step()` and `train_step_expected_sarsa()` to return `avg_reward` in their result dict.
->
-> **Reduced memory replay cost**
-> - `config.json → memory_replay.cost_per_iteration` changed from `2` to `0.01` (10 coins per 1 000 iterations).
-> - `ResearchLabScene._replay_cost()` now uses `max(1, round(iters × float(cost_per_iteration)))` to handle fractional costs.
->
-> **Separate replay buffer file**
-> - `DQNAgent.save_checkpoint(path)` now saves model weights + optimizer only (no buffer).
-> - `DQNAgent.save_buffer(path)` writes the PER buffer to a separate `{name}_{role}_buffer.pt`.
-> - `DQNAgent.load_buffer(path)` loads from the separate file. Old checkpoints that embed the buffer are still loaded via backward-compat code in `load_checkpoint`.
-> - `GameManager.buffer_path(name, role)` returns the buffer file path. `init_agents()` calls `load_buffer` after `load_checkpoint`.
->
-> **Async checkpoint + buffer save on wave end**
-> - `BattleScene._save_checkpoints_async()` spawns a background daemon thread that saves model checkpoints + replay buffers after each wave clears.
-> - While saving, `self._saving = True` and the HUD AI panel shows a "Saving..." line. The flag is cleared when the thread finishes.
-> - A new save is skipped (no-op) if a previous one is still running.
-> - `_save_run_result()` (end-of-session) also saves the buffer synchronously alongside the model.
->
-> **Auto-save after memory replay in Research Lab**
-> - After the replay training thread completes, model checkpoints + replay buffers are saved in the same daemon thread.
-> - During save: "Saving checkpoints..." text replaces progress; the "Train Now" button is greyed out.
-> - When save completes, the two-line training result is shown.
+> - Memory Replay result shows two lines: `F  loss:X.XXXX  avg rew:X.XXX` and `A  loss:X.XXXX  avg rew:X.XXX`.
+> - `config.json → memory_replay.cost_per_iteration` = `0.01` (10 coins per 1 000 iterations).
+> - Model checkpoint no longer embeds the buffer; backward-compat loads of old checkpoints still supported.
 >
 > **Known issues:**
+> - Old `{name}_{role}_buffer.pt` flat files (prior save format) will not be loaded — players upgrading from old saves will start with an empty buffer but keep their model weights.
 > - Old `.pt` checkpoints (Transformer / 16-action archer) will fail architecture check on load and silently start fresh — use `[R] Reset Brain` in-game.
 > - Frame-buffer starts with 4 zero frames; first few transitions have identical obs/next_obs — harmless in practice since these are filled within seconds.

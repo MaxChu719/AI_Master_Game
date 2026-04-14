@@ -48,7 +48,6 @@ _AI_MASTER_ROWS = [
     ("Fireball Radius", "fb_radius",     _AIM["fb_radius_costs"],     5, "+15 px radius"),
     ("Fireball CD",     "fb_cooldown",   _AIM["fb_cooldown_costs"],   5, "-1.5 s cooldown"),
     ("Deploy Limit",    "deployment",    _AIM["deployment_costs"],    5, "+global cap (2→5→8→12→16→20)"),
-    ("Buffer Size",     "buffer_size",   _AIM["buffer_size_costs"],   5, "+10 000 replay transitions"),
 ]
 
 _ROW_START_Y = 148
@@ -201,26 +200,8 @@ class ResearchLabScene(BaseScene):
             return
         self.game_manager.coins -= cost
         self._ai_master()[key] = level + 1
-
-        # If buffer_size was upgraded, resize the live agents
-        if key == "buffer_size":
-            self._resize_agents()
-
         self.game_manager.save_game()
         self._flash(f"{label} → Lv.{level + 1}!")
-
-    def _resize_agents(self):
-        """Resize agent replay buffers to match the current buffer_size upgrade level."""
-        from config import CFG
-        buf_base    = int(CFG["dqn"]["replay_buffer_size"])
-        buf_per_lvl = int(CFG["memory_replay"]["buffer_size_per_upgrade"])
-        buf_level   = self._aim_level(
-            next(i for i, r in enumerate(_AI_MASTER_ROWS) if r[1] == "buffer_size"))
-        new_size = buf_base + buf_level * buf_per_lvl
-        fa = self.game_manager.fighter_agent
-        aa = self.game_manager.archer_agent
-        if fa: fa.resize_buffer(new_size)
-        if aa: aa.resize_buffer(new_size)
 
     def _start_battle(self):
         self.game_manager.save_game()
@@ -282,15 +263,13 @@ class ResearchLabScene(BaseScene):
             avg_a_rew  = total_a_rew  / max(1, steps)
             self._replay_running = False
 
-            # Save checkpoints + buffers in the same background thread
+            # Save model checkpoints only (buffer saved at session end)
             name = gm.player_name
             if name:
                 self._replay_saving = True
                 try:
                     fa.save_checkpoint(gm.brain_path(name, "fighter"))
                     aa.save_checkpoint(gm.brain_path(name, "archer"))
-                    fa.save_buffer(gm.buffer_path(name, "fighter"))
-                    aa.save_buffer(gm.buffer_path(name, "archer"))
                 finally:
                     self._replay_saving = False
 

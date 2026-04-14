@@ -21,7 +21,6 @@ _DEFAULT_AI_MASTER = {
     "fb_radius":       0,   # level 0-5, +15 px each
     "fb_cooldown":     0,   # level 0-4, -1.5 s each
     "deployment":      0,   # level 0-4, +2 minions each (starts at 2)
-    "buffer_size":     0,   # level 0-5, +10 000 transitions each
 }
 
 _DEFAULT_STATS = {
@@ -98,10 +97,7 @@ class GameManager:
         from ai.dqn import DQNAgent
         from config import CFG
 
-        buf_base    = int(CFG["dqn"]["replay_buffer_size"])
-        buf_per_lvl = int(CFG["memory_replay"]["buffer_size_per_upgrade"])
-        buf_level   = self.save_data.get("ai_master", {}).get("buffer_size", 0) if self.save_data else 0
-        buf_size    = buf_base + buf_level * buf_per_lvl
+        buf_size = int(CFG["dqn"]["replay_buffer_size"])
 
         # Fighter: 16 actions (8 move + 8 attack directions)
         # Archer:  24 actions (8 move + 16 attack directions for higher precision)
@@ -113,8 +109,8 @@ class GameManager:
         if self.player_name:
             self.fighter_agent.load_checkpoint(self.brain_path(self.player_name, "fighter"))
             self.archer_agent.load_checkpoint( self.brain_path(self.player_name, "archer"))
-            self.fighter_agent.load_buffer(self.buffer_path(self.player_name, "fighter"))
-            self.archer_agent.load_buffer( self.buffer_path(self.player_name, "archer"))
+            self.fighter_agent.load_buffer_sessions(self.buffer_folder(self.player_name, "fighter"))
+            self.archer_agent.load_buffer_sessions( self.buffer_folder(self.player_name, "archer"))
 
     # ------------------------------------------------------------------
     # Save / Load helpers
@@ -126,9 +122,9 @@ class GameManager:
         """Return path to the brain checkpoint (model weights only) for the given save name and role."""
         return os.path.join(_SAVES_DIR, f"{name}_{role}.pt")
 
-    def buffer_path(self, name: str, role: str) -> str:
-        """Return path to the replay buffer file for the given save name and role."""
-        return os.path.join(_SAVES_DIR, f"{name}_{role}_buffer.pt")
+    def buffer_folder(self, name: str, role: str) -> str:
+        """Return path to the session buffer folder for the given save name and role."""
+        return os.path.join(_SAVES_DIR, f"{name}_{role}_buffer")
 
     def save_exists(self, name: str) -> bool:
         return os.path.isfile(self._save_path(name))
@@ -151,6 +147,8 @@ class GameManager:
             "research":   copy.deepcopy(_DEFAULT_RESEARCH),
             "ai_master":  copy.deepcopy(_DEFAULT_AI_MASTER),
             "stats":      copy.deepcopy(_DEFAULT_STATS),
+            "fighter_session_idx": 0,
+            "archer_session_idx":  0,
         }
         self._write_save()
         self.init_agents()
@@ -178,6 +176,9 @@ class GameManager:
             data["stats"].setdefault(minion, copy.deepcopy(_DEFAULT_STATS[minion]))
             for stat in _DEFAULT_STATS[minion]:
                 data["stats"][minion].setdefault(stat, 0)
+
+        data.setdefault("fighter_session_idx", 0)
+        data.setdefault("archer_session_idx",  0)
 
         self.player_name = name
         self.save_data   = data

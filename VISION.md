@@ -207,10 +207,32 @@ Between battles, the player can spend coins to run **off-policy training** on th
 - Specify number of iterations (10–5 000).
 - Cost = iterations × 0.01 coins (10 coins per 1 000 iterations).
 - Training runs in a background thread; a **live progress bar** is shown while training, and the result (avg loss + avg reward per sampled batch) appears when done.
-- After training completes, model checkpoints and the replay buffer are automatically saved; a "Saving checkpoints..." indicator is shown during this process.
-- Buffer size is upgradeable (up to +50 000 transitions).
-- Upgrading the buffer capacity preserves all existing transitions — they are migrated into the larger buffer.
-- The replay buffer is saved to a separate `{name}_{role}_buffer.pt` file (decoupled from the model checkpoint).
+- After training completes, **only model checkpoints are saved** (fast); the replay buffer is not re-serialized here.
+
+### Session-Based Replay Buffer Storage
+
+The replay buffer is stored as a **folder of per-session snapshot files**, one per gaming session (run from new-game/load to game-over):
+
+```
+data/saves/
+├── {name}.json
+├── {name}_fighter.pt           ← model checkpoint
+├── {name}_archer.pt
+├── {name}_fighter_buffer/      ← session snapshot folder
+│   ├── session_0001.pt         ← oldest retained session
+│   ├── session_0002.pt
+│   └── session_0003.pt         ← most recent session
+└── {name}_archer_buffer/
+    └── ...
+```
+
+**Saving (on game-over only):** At session end, extract the top `max_session_transitions` (default 10,000, configurable) transitions by PER priority from the current in-memory buffer and write a new `session_{N:04d}.pt` file. This preserves the most informative experience (highest TD error) rather than a random cross-section. If the folder exceeds `max_buffer_sessions` (default 10, configurable), the oldest file is deleted. No buffer save occurs mid-session (e.g. after each wave) — only the model checkpoint is saved then.
+
+**Loading (on game load):** All session files are read in ascending order (oldest first) and re-inserted into the in-memory buffer. Loading oldest-first ensures the most recent sessions survive naturally when the ring buffer overflows.
+
+**Priority handling:** Loaded transitions are re-inserted at maximum priority. Prior priorities are stale (network weights have changed since), so uniform max-priority is correct; priorities are re-ranked naturally during training.
+
+**Session index tracking:** The save JSON stores monotonically incrementing counters (`fighter_session_idx`, `archer_session_idx`) so filenames are unique and never reused.
 
 ### Memory Storage Frequency
 
@@ -235,7 +257,7 @@ Two tabs:
 | Tab | Upgrades |
 |---|---|
 | **AI Minions** | Fighter: HP, Attack, Move Speed, Atk Speed, Stamina (5 levels each) · Archer: HP, Attack, Move Speed, Stamina (5 levels each) |
-| **AI Master** | Max MP, MP Regen, Heal Amount, Heal Radius, Heal Cooldown, Fireball DMG, Fireball Radius, Fireball CD, Deploy Limit (global cap: 2→5→8→12→16→20), Buffer Size + Memory Replay Training UI |
+| **AI Master** | Max MP, MP Regen, Heal Amount, Heal Radius, Heal Cooldown, Fireball DMG, Fireball Radius, Fireball CD, Deploy Limit (global cap: 2→5→8→12→16→20), Memory Replay Training UI |
 
 ---
 

@@ -194,12 +194,15 @@
     "fb_damage_costs":       [200, 400, 600, 800, 1000],
     "fb_radius_costs":       [200, 400, 600, 800, 1000],
     "fb_cooldown_costs":     [200, 400, 600, 800, 1000],
-    "deployment_costs":      [300, 600, 900, 1200, 1500],
-    "buffer_size_costs":     [200, 400, 600, 800, 1000]
+    "deployment_costs":      [300, 600, 900, 1200, 1500]
+  },
+
+  "memory_buffer": {
+    "max_session_transitions": 10000,
+    "max_buffer_sessions": 10
   },
 
   "memory_replay": {
-    "buffer_size_per_upgrade": 10000,
     "cost_per_iteration": 0.01,
     "max_iterations_input": 5000
   },

@@ -669,26 +669,6 @@ class DQNAgent:
         self.per_beta     = float(_RCFG["per_beta_start"])
         self.step_counter = 0
 
-    def resize_buffer(self, new_size: int):
-        """Resize the replay buffer, preserving existing transitions up to new_size."""
-        if new_size == self.buffer_size:
-            return
-        old_tree = self.tree
-        old_size = old_tree.size
-        new_tree = SumTree(new_size)
-        if old_size > 0:
-            capacity = old_tree.capacity
-            start = old_tree.write if old_size == capacity else 0
-            count = min(old_size, new_size)
-            for i in range(count):
-                slot     = (start + (old_size - count) + i) % capacity
-                priority = float(old_tree.tree[slot + capacity - 1])
-                data     = old_tree.data[slot]
-                if data is not None:
-                    new_tree.add(priority if priority > 0 else self._max_priority(), data)
-        self.buffer_size = new_size
-        self.tree        = new_tree
-
     def save_checkpoint(self, path: str):
         """Save model weights, optimizer state, and training counters (no buffer)."""
         import os
@@ -702,23 +682,70 @@ class DQNAgent:
             "buffer_size":  self.buffer_size,
         }, path)
 
-    def save_buffer(self, path: str):
-        """Save the replay buffer (PER priorities + transitions) to a separate file."""
+    def save_buffer_session(self, folder: str, session_idx: int):
+        """Save the top-N transitions by PER priority to a session snapshot file.
+
+        Extracts up to max_session_transitions highest-priority transitions from the
+        in-memory buffer and writes them to folder/session_{session_idx:04d}.pt.
+        Deletes the oldest session file if the folder exceeds max_buffer_sessions.
+        """
         import os
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        capacity    = self.tree.capacity
-        start       = self.tree.write if self.tree.size == capacity else 0
-        buf_entries = []
-        for i in range(self.tree.size):
-            slot     = (start + i) % capacity
-            priority = float(self.tree.tree[slot + capacity - 1])
-            data     = self.tree.data[slot]
-            if data is not None:
-                buf_entries.append((priority, data))
-        torch.save({"buffer": buf_entries}, path)
+        mb_cfg          = CFG.get("memory_buffer", {})
+        max_transitions = int(mb_cfg.get("max_session_transitions", 10000))
+        max_sessions    = int(mb_cfg.get("max_buffer_sessions", 10))
+
+        if self.tree.size == 0:
+            return
+
+        os.makedirs(folder, exist_ok=True)
+
+        # Extract top-N leaf indices by priority
+        capacity = self.tree.capacity
+        # Leaf i has priority at tree[capacity - 1 + i] and data at data[i]
+        valid = [(self.tree.tree[capacity - 1 + i], i)
+                 for i in range(capacity)
+                 if self.tree.data[i] is not None]
+        valid.sort(key=lambda x: x[0], reverse=True)
+        top_entries = [self.tree.data[i] for _, i in valid[:max_transitions]]
+
+        out_path = os.path.join(folder, f"session_{session_idx:04d}.pt")
+        torch.save({"buffer": top_entries}, out_path)
+
+        # Evict oldest files beyond the session cap
+        session_files = sorted(
+            f for f in os.listdir(folder)
+            if f.startswith("session_") and f.endswith(".pt")
+        )
+        while len(session_files) > max_sessions:
+            os.remove(os.path.join(folder, session_files.pop(0)))
+
+    def load_buffer_sessions(self, folder: str):
+        """Load all session snapshot files from folder into the PER buffer.
+
+        Files are loaded oldest-first (by filename sort order) so that when the
+        ring buffer overflows, the most recent sessions naturally survive.
+        All transitions are inserted at max priority; priorities are re-ranked
+        during training.
+        """
+        import os
+        if not os.path.isdir(folder):
+            return
+        session_files = sorted(
+            f for f in os.listdir(folder)
+            if f.startswith("session_") and f.endswith(".pt")
+        )
+        for fname in session_files:
+            path = os.path.join(folder, fname)
+            try:
+                ck = torch.load(path, map_location="cpu", weights_only=False)
+                p  = self._max_priority() ** self.per_alpha
+                for data in ck.get("buffer", []):
+                    self.tree.add(p, data)
+            except Exception:
+                pass
 
     def load_checkpoint(self, path: str):
-        """Load model weights and training state. Buffer loaded separately via load_buffer."""
+        """Load model weights and training state. Buffer loaded separately via load_buffer_sessions."""
         import os
         if not os.path.isfile(path):
             return
@@ -738,14 +765,3 @@ class DQNAgent:
         except Exception:
             pass  # Architecture changed; start fresh
 
-    def load_buffer(self, path: str):
-        """Load replay buffer from a separate buffer file."""
-        import os
-        if not os.path.isfile(path):
-            return
-        try:
-            ck = torch.load(path, map_location="cpu", weights_only=False)
-            for priority, data in ck.get("buffer", []):
-                self.tree.add(priority if priority > 0 else 1.0, data)
-        except Exception:
-            pass
