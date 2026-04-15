@@ -1,6 +1,10 @@
 """
 Spell effects for the AI Master.
 
+Additional class:
+  SummonPortal — animated summoning circle played before a minion spawns.
+                 When self.done == True, the caller should create the minion.
+
 Classes:
   HealingEffect   — instant AOE heal in a radius; plays a rising-sparkle animation.
   FireballPending — visual indicator while the meteor is in flight (countdown reticle).
@@ -171,9 +175,6 @@ class FireballPending:
         pygame.draw.line(surface, (255, 60, 0), (cx - length, cy), (cx + length, cy), 1)
         pygame.draw.line(surface, (255, 60, 0), (cx, cy - length), (cx, cy + length), 1)
 
-        # Countdown text (seconds remaining)
-        remaining = max(0.0, self.flight_time - self.timer)
-
         # Descending meteor
         meteor_y = int(self._meteor_start_y + p * (self._meteor_end_y - self._meteor_start_y - 30))
         meteor_x = cx
@@ -284,3 +285,96 @@ class FireballLanding:
             col   = (int(255 * ratio), int(100 * ratio ** 2), 0)
             sz    = max(1, int(p["size"] * ratio))
             pygame.draw.circle(surface, col, (int(p["x"]), int(p["y"])), sz)
+
+
+# ── SummonPortal ──────────────────────────────────────────────────────────────
+
+class SummonPortal:
+    """
+    Summoning circle animation played at a chosen arena position before a
+    minion spawns.  The caller should check self.done each frame and spawn
+    the minion when True.
+
+    role:      "fighter" | "archer" | "fire_mage" | "ice_mage"
+    pos:       (x, y) spawn location chosen by AI Master
+    duration:  how long the portal animates before self.done becomes True
+    """
+
+    # Colour schemes per role
+    _COLORS = {
+        "fighter":   ((80, 130, 255),  (160, 200, 255)),
+        "archer":    ((60, 200,  90),  (160, 255, 180)),
+        "fire_mage": ((255, 80,  20),  (255, 200, 60)),
+        "ice_mage":  ((60, 180, 255),  (180, 230, 255)),
+    }
+
+    def __init__(self, pos, role: str, duration: float = 1.2):
+        self.pos      = pygame.Vector2(pos)
+        self.role     = role
+        self.duration = duration
+        self.timer    = 0.0
+        self.is_alive = True   # stays True until animation ends
+        self.done     = False  # set True when animation completes
+
+        inner, outer = self._COLORS.get(role, ((160, 160, 255), (220, 220, 255)))
+        self._inner_col = inner
+        self._outer_col = outer
+
+        # Rune particles (spinning dots on the ring)
+        self._n_runes  = 8
+        self._rune_offset = random.uniform(0, math.tau)
+
+    def update(self, dt: float):
+        self.timer += dt
+        if self.timer >= self.duration:
+            self.is_alive = False
+            self.done     = True
+
+    def draw(self, surface: pygame.Surface):
+        cx  = int(self.pos.x)
+        cy  = int(self.pos.y)
+        t   = min(1.0, self.timer / self.duration)
+
+        # Portal radius grows then holds
+        max_r = 32
+        r     = int(max_r * min(1.0, t * 2.5))
+
+        # Outer ring
+        if r > 1:
+            alpha = int(200 * (1 - abs(t * 2 - 1) * 0.5))
+            pygame.draw.circle(surface, self._outer_col, (cx, cy), r, 2)
+
+        # Inner fill (alpha pulsing)
+        inner_r = max(2, r - 4)
+        if inner_r > 2:
+            pulse = 0.5 + 0.5 * math.sin(self.timer * 10.0)
+            inner_surf = pygame.Surface((inner_r * 2 + 2, inner_r * 2 + 2), pygame.SRCALPHA)
+            a = int(60 * pulse * t)
+            pygame.draw.circle(inner_surf, (*self._inner_col, a),
+                               (inner_r + 1, inner_r + 1), inner_r)
+            surface.blit(inner_surf, (cx - inner_r - 1, cy - inner_r - 1))
+
+        # Spinning rune dots
+        spin_speed = 3.0 + t * 4.0
+        for i in range(self._n_runes):
+            angle = self._rune_offset + i * (math.tau / self._n_runes) + self.timer * spin_speed
+            rx = cx + int(math.cos(angle) * r)
+            ry = cy + int(math.sin(angle) * r)
+            rune_r = max(2, int(4 * t))
+            pygame.draw.circle(surface, self._inner_col, (rx, ry), rune_r)
+
+        # Bright flash at the start
+        if t < 0.15:
+            flash_t = 1.0 - t / 0.15
+            fl_surf = pygame.Surface((max_r * 2 + 4, max_r * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(fl_surf, (*self._outer_col, int(180 * flash_t)),
+                               (max_r + 2, max_r + 2), max_r)
+            surface.blit(fl_surf, (cx - max_r - 2, cy - max_r - 2))
+
+        # Bright flash at the end (minion materialises)
+        if t > 0.85:
+            flash_t = (t - 0.85) / 0.15
+            fl_surf = pygame.Surface((max_r * 2 + 4, max_r * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(fl_surf, (255, 255, 255, int(220 * flash_t)),
+                               (max_r + 2, max_r + 2), max_r)
+            surface.blit(fl_surf, (cx - max_r - 2, cy - max_r - 2))

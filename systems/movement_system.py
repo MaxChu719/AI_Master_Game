@@ -4,6 +4,9 @@ Movement system — handles multi-minion lists and an optional boss entity.
 Swarm enemies always chase the nearest alive minion.
 Spider enemies (enemy_type == 1) keep a preferred distance, flee when too
 close, and strafe when at their preferred range.
+Slime (enemy_type == 2) and Creeper (enemy_type == 4) chase nearest minion
+like swarms.
+Frozen enemies (frozen_timer > 0) are held in place for the duration.
 Frozen minions (frozen_timer > 0) are held in place for the duration, but
 still receive knockback displacement.
 
@@ -84,13 +87,21 @@ class MovementSystem:
             if not enemy.is_alive:
                 continue
 
+            # Enemies with a freeze timer cannot move voluntarily
+            if getattr(enemy, 'frozen_timer', 0.0) > 0:
+                enemy.frozen_timer = max(0.0, enemy.frozen_timer - dt)
+                half_e = enemy.size // 2
+                enemy.pos.x = max(left + half_e, min(right - half_e, enemy.pos.x))
+                enemy.pos.y = max(top  + half_e, min(bottom - half_e, enemy.pos.y))
+                continue
+
             etype = getattr(enemy, 'enemy_type', 0)
 
             if etype == 1:
                 # ── Spider: keep preferred distance, strafe, flee ────────
                 self._move_spider(enemy, dt, all_minions, left, top, right, bottom)
             else:
-                # ── Swarm: chase nearest alive minion ────────────────────
+                # ── Swarm / Slime / Creeper: chase nearest alive minion ───
                 target      = None
                 target_dist = float("inf")
                 for candidate in all_minions:

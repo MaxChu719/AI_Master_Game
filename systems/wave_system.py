@@ -9,15 +9,19 @@ Wave count formula:
 from __future__ import annotations
 import random
 import pygame
-from entities.enemy  import Enemy
-from entities.spider import Spider
-from entities.boss   import Boss
+from entities.enemy   import Enemy
+from entities.spider  import Spider
+from entities.slime   import Slime
+from entities.creeper import Creeper
+from entities.boss    import Boss
 from config import CFG
 
 _WC  = CFG["wave"]
 _EC  = CFG["economy"]
 _BC  = CFG["boss"]
 _M   = CFG["arena"]["margin"]
+_SLC = CFG.get("slime",   {})
+_CRC = CFG.get("creeper", {})
 
 MAX_WAVES             = int(_WC["max_waves"])
 FIRST_TEN             = list(_WC["first_ten_counts"])
@@ -29,6 +33,10 @@ SPIDER_SWARM_RATIO    = float(_WC.get("spider_swarm_ratio", 0.25))
 COIN_PER_KILL         = int(_EC["coins_per_kill"])
 COIN_PER_WAVE         = int(_EC["coins_per_wave"])
 BOSS_COIN_REWARD      = int(_BC["coin_reward"])
+
+# New enemy wave start thresholds (1-based wave number)
+SLIME_WAVE_START   = int(_SLC.get("wave_start",   3))
+CREEPER_WAVE_START = int(_CRC.get("wave_start",   5))
 
 ARENA_LEFT   = _M
 ARENA_TOP    = _M
@@ -46,6 +54,20 @@ def _wave_swarm_count(wave_index: int) -> int:
 def _wave_spider_count(wave_index: int) -> int:
     """Number of spiders to spawn this wave — ~25% of the swarm count, every wave."""
     return max(1, round(_wave_swarm_count(wave_index) * SPIDER_SWARM_RATIO))
+
+
+def _wave_slime_count(wave_index: int) -> int:
+    """Large Slimes to spawn — 1 per 8 swarms, starting at SLIME_WAVE_START."""
+    if wave_index + 1 < SLIME_WAVE_START:
+        return 0
+    return max(1, _wave_swarm_count(wave_index) // 8)
+
+
+def _wave_creeper_count(wave_index: int) -> int:
+    """Creepers to spawn — 1 per 10 swarms, starting at CREEPER_WAVE_START."""
+    if wave_index + 1 < CREEPER_WAVE_START:
+        return 0
+    return max(1, _wave_swarm_count(wave_index) // 10)
 
 
 def _is_boss_wave(wave_index: int) -> bool:
@@ -151,6 +173,10 @@ class WaveSystem:
                 etype = self._spawn_queue[self.enemies_spawned]
                 if etype == "spider":
                     e = Spider(_random_edge_pos())
+                elif etype == "slime":
+                    e = Slime(_random_edge_pos(), generation=0)
+                elif etype == "creeper":
+                    e = Creeper(_random_edge_pos())
                 else:
                     e = Enemy(_random_edge_pos())
                     _ecc = CFG["enemy"]
@@ -215,9 +241,14 @@ class WaveSystem:
         is_bw      = _is_boss_wave(self.wave_index)
         n_swarms   = BOSS_WAVE_SWARMS if is_bw else _wave_swarm_count(self.wave_index)
         n_spiders  = _wave_spider_count(self.wave_index)
+        n_slimes   = 0 if is_bw else _wave_slime_count(self.wave_index)
+        n_creepers = 0 if is_bw else _wave_creeper_count(self.wave_index)
 
-        # Build a shuffled spawn queue so spiders are interspersed with swarms
-        self._spawn_queue = ["swarm"] * n_swarms + ["spider"] * n_spiders
+        # Build a shuffled spawn queue
+        self._spawn_queue = (["swarm"]   * n_swarms  +
+                             ["spider"]  * n_spiders +
+                             ["slime"]   * n_slimes  +
+                             ["creeper"] * n_creepers)
         random.shuffle(self._spawn_queue)
         self.enemies_to_spawn = len(self._spawn_queue)
         self.enemies_spawned  = 0

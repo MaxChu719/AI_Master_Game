@@ -182,6 +182,12 @@
     },
     "summon_archer": {
       "mp_cost": 40
+    },
+    "summon_fire_mage": {
+      "mp_cost": 60
+    },
+    "summon_ice_mage": {
+      "mp_cost": 55
     }
   },
 
@@ -203,8 +209,8 @@
   },
 
   "memory_replay": {
-    "cost_per_iteration": 0.01,
-    "max_iterations_input": 5000
+    "cost_per_iteration": 0.1,
+    "max_iterations_input": 10000
   },
 
   "display": {
@@ -258,5 +264,66 @@
 
   "expected_sarsa": {
     "softmax_temperature": 1.0
+  },
+
+  "fire_mage": {
+    "hp": 50,
+    "speed": 65.0,
+    "size": 20,
+    "attack_range": 260.0,
+    "preferred_range": 210.0,
+    "min_safe_dist": 80.0,
+    "fireball_cooldown": 2.5,
+    "fireball_speed": 310.0,
+    "fireball_damage": 22,
+    "fireball_explosion_radius": 75,
+    "burn_dps": 8.0,
+    "burn_duration": 3.0
+  },
+
+  "ice_mage": {
+    "hp": 50,
+    "speed": 65.0,
+    "size": 20,
+    "attack_range": 240.0,
+    "preferred_range": 200.0,
+    "min_safe_dist": 80.0,
+    "iceball_cooldown": 3.0,
+    "iceball_speed": 290.0,
+    "iceball_damage": 15,
+    "freeze_duration": 2.0
+  },
+
+  "slime": {
+    "large_hp": 80,
+    "medium_hp": 40,
+    "small_hp": 20,
+    "large_size": 28,
+    "medium_size": 18,
+    "small_size": 12,
+    "large_speed": 55.0,
+    "medium_speed": 75.0,
+    "small_speed": 100.0,
+    "large_attack": 10,
+    "medium_attack": 6,
+    "small_attack": 3,
+    "attack_range": 28.0,
+    "attack_cooldown": 1.2,
+    "wave_start": 3
+  },
+
+  "creeper": {
+    "hp": 60,
+    "speed": 85.0,
+    "size": 22,
+    "explosion_radius": 100.0,
+    "explosion_damage": 55,
+    "trigger_range": 35.0,
+    "fuse_flash_rate": 8.0,
+    "wave_start": 5
+  },
+
+  "summon_portal": {
+    "duration": 1.2
   }
 }

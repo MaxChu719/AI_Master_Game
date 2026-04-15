@@ -19,8 +19,10 @@ _MAX_WAVES = int(CFG["wave"]["max_waves"])
 _SP        = CFG["spells"]
 _MP_CFG    = CFG["mp"]
 _SUMMON_CFG = {
-    "fighter": float(_SP.get("summon_fighter", {}).get("mp_cost", 50)),
-    "archer":  float(_SP.get("summon_archer",  {}).get("mp_cost", 40)),
+    "fighter":   float(_SP.get("summon_fighter",   {}).get("mp_cost", 50)),
+    "archer":    float(_SP.get("summon_archer",    {}).get("mp_cost", 40)),
+    "fire_mage": float(_SP.get("summon_fire_mage", {}).get("mp_cost", 60)),
+    "ice_mage":  float(_SP.get("summon_ice_mage",  {}).get("mp_cost", 55)),
 }
 
 
@@ -268,6 +270,8 @@ class HUD:
         fb_cost   = int(_SP["fireball"]["mp_cost"])
         sf_cost   = int(_SUMMON_CFG["fighter"])
         sa_cost   = int(_SUMMON_CFG["archer"])
+        sfm_cost  = int(_SUMMON_CFG["fire_mage"])
+        sim_cost  = int(_SUMMON_CFG["ice_mage"])
 
         # Wave / cap availability for summon icons (global shared cap)
         from systems.wave_system import WaveState as _WS
@@ -276,21 +280,25 @@ class HUD:
         global_cap   = getattr(scene, "spawn_cap_total", int(_default_caps[-1]))
         cur_f        = len(scene.fighters)
         cur_a        = len(scene.archers)
-        total_minions = cur_f + cur_a
+        cur_fm       = len(getattr(scene, "fire_mages", []))
+        cur_im       = len(getattr(scene, "ice_mages",  []))
+        total_minions = cur_f + cur_a + cur_fm + cur_im
         summon_f_ok  = wave_active and total_minions < global_cap
         summon_a_ok  = wave_active and total_minions < global_cap
+        summon_fm_ok = wave_active and total_minions < global_cap
+        summon_im_ok = wave_active and total_minions < global_cap
 
-        # Layout constants
+        # Layout constants — 6 icons wide
         cx      = sw // 2
-        icon_sz = 46
-        gap     = 10
+        icon_sz = 44
+        gap     = 8
         bar_h   = 18
-        bar_w   = 4 * icon_sz + 3 * gap   # bar same width as icon row
+        bar_w   = 6 * icon_sz + 5 * gap
         bar_x   = cx - bar_w // 2
 
         icon_row_y = sh - icon_sz - 8
         bar_y      = icon_row_y - bar_h - 6
-        icon_row_x = bar_x   # left-align icons with bar
+        icon_row_x = bar_x
 
         # Background panel
         pad = 6
@@ -314,16 +322,20 @@ class HUD:
         mp_txt = self.font_spell.render(f"MP  {int(mp)} / {int(max_mp)}", True, (180, 200, 255))
         surface.blit(mp_txt, mp_txt.get_rect(center=(cx, bar_y + bar_h // 2)))
 
-        # ── Row 2: Four spell icons ───────────────────────────────────────
+        # ── Row 2: Six spell icons ────────────────────────────────────────
         spell_defs = [
-            ("healing",       "Heal",     heal_cost, heal_cd, heal_base_cd,
+            ("healing",          "Heal",      heal_cost, heal_cd, heal_base_cd,
              (50, 200, 100),  True),
-            ("fireball",      "Fireball", fb_cost,   fb_cd,  fb_base_cd,
+            ("fireball",         "Fireball",  fb_cost,   fb_cd,  fb_base_cd,
              (220, 80, 20),   True),
-            ("summon_fighter", "Summon F", sf_cost,  0.0,    1.0,
+            ("summon_fighter",   "Summon F",  sf_cost,   0.0,    1.0,
              (80, 130, 230),  summon_f_ok),
-            ("summon_archer",  "Summon A", sa_cost,  0.0,    1.0,
+            ("summon_archer",    "Summon A",  sa_cost,   0.0,    1.0,
              (60, 200, 90),   summon_a_ok),
+            ("summon_fire_mage", "Summon FM", sfm_cost,  0.0,    1.0,
+             (220, 80, 20),   summon_fm_ok),
+            ("summon_ice_mage",  "Summon IM", sim_cost,  0.0,    1.0,
+             (60, 180, 255),  summon_im_ok),
         ]
 
         for i, (name, label, cost, cd, max_cd, color, extra_cond) in enumerate(spell_defs):
@@ -345,10 +357,12 @@ class HUD:
 
         # Background colour per spell family
         _BG = {
-            "healing":       (30, 55, 35),
-            "fireball":      (55, 25, 15),
-            "summon_fighter": (20, 30, 60),
-            "summon_archer":  (20, 50, 25),
+            "healing":          (30, 55, 35),
+            "fireball":         (55, 25, 15),
+            "summon_fighter":   (20, 30, 60),
+            "summon_archer":    (20, 50, 25),
+            "summon_fire_mage": (55, 18, 10),
+            "summon_ice_mage":  (10, 28, 60),
         }
         bg_col = _BG.get(name, (30, 30, 50))
         bord   = icon_color if available else (55, 55, 70)
@@ -406,10 +420,13 @@ class HUD:
             scene = self.scene
             _caps = _SPAWN_CFG.get("deployment_caps_global", [2, 5, 8, 12, 16, 20])
             gcap  = getattr(scene, "spawn_cap_total", int(_caps[-1]))
-            cur_f = len(scene.fighters)
-            cur_a = len(scene.archers)
+            cur_f  = len(scene.fighters)
+            cur_a  = len(scene.archers)
+            cur_fm = len(getattr(scene, "fire_mages", []))
+            cur_im = len(getattr(scene, "ice_mages",  []))
+            total  = cur_f + cur_a + cur_fm + cur_im
             badge = self.font_spell.render(
-                f"F:{cur_f}  {cur_f+cur_a}/{gcap}", True,
+                f"F:{cur_f}  {total}/{gcap}", True,
                 (160, 200, 255) if available else (70, 70, 90))
             surface.blit(badge, badge.get_rect(midbottom=(cx_i, y + sz - 1)))
 
@@ -429,15 +446,71 @@ class HUD:
                 pulse = int(abs(math.sin(t)) * 80)
                 tip = (60, 200 + pulse // 2, 80 + pulse)
                 pygame.draw.circle(surface, tip, (cx_i + 10, cy_i), 3)
-            # Count badge: shows "A:n | total/cap" to reflect shared global pool
+            # Count badge
             scene = self.scene
             _caps = _SPAWN_CFG.get("deployment_caps_global", [2, 5, 8, 12, 16, 20])
             gcap  = getattr(scene, "spawn_cap_total", int(_caps[-1]))
-            cur_f = len(scene.fighters)
-            cur_a = len(scene.archers)
+            cur_f  = len(scene.fighters)
+            cur_a  = len(scene.archers)
+            cur_fm = len(getattr(scene, "fire_mages", []))
+            cur_im = len(getattr(scene, "ice_mages",  []))
+            total  = cur_f + cur_a + cur_fm + cur_im
             badge = self.font_spell.render(
-                f"A:{cur_a}  {cur_f+cur_a}/{gcap}", True,
+                f"A:{cur_a}  {total}/{gcap}", True,
                 (100, 220, 130) if available else (70, 90, 70))
+            surface.blit(badge, badge.get_rect(midbottom=(cx_i, y + sz - 1)))
+
+        elif name == "summon_fire_mage":
+            c = c_on if available else c_off
+            # Fire orb with flame lines
+            pygame.draw.circle(surface, c, (cx_i, cy_i + 2), 9)
+            pygame.draw.circle(surface, (255, 200, 60) if available else (60, 50, 20),
+                               (cx_i, cy_i - 1), 5)
+            if available:
+                t = pygame.time.get_ticks() / 500.0
+                for k in range(4):
+                    a  = k * math.pi / 2 + t
+                    ex = cx_i + int(math.cos(a) * 14)
+                    ey = cy_i + int(math.sin(a) * 14)
+                    pygame.draw.line(surface, (255, 120, 20), (cx_i, cy_i - 1), (ex, ey), 2)
+            scene = self.scene
+            _caps = _SPAWN_CFG.get("deployment_caps_global", [2, 5, 8, 12, 16, 20])
+            gcap  = getattr(scene, "spawn_cap_total", int(_caps[-1]))
+            cur_f  = len(scene.fighters)
+            cur_a  = len(scene.archers)
+            cur_fm = len(getattr(scene, "fire_mages", []))
+            cur_im = len(getattr(scene, "ice_mages",  []))
+            total  = cur_f + cur_a + cur_fm + cur_im
+            badge  = self.font_spell.render(
+                f"FM:{cur_fm} {total}/{gcap}", True,
+                (255, 160, 60) if available else (80, 50, 30))
+            surface.blit(badge, badge.get_rect(midbottom=(cx_i, y + sz - 1)))
+
+        elif name == "summon_ice_mage":
+            c = c_on if available else c_off
+            # Ice crystal diamond
+            pygame.draw.circle(surface, c, (cx_i, cy_i), 9)
+            hs = 5
+            pts = [(cx_i, cy_i - hs - 4), (cx_i + hs, cy_i),
+                   (cx_i, cy_i + hs + 4), (cx_i - hs, cy_i)]
+            pygame.draw.polygon(surface, c, pts)
+            pygame.draw.polygon(surface, (200, 240, 255) if available else (50, 60, 80),
+                               pts, 1)
+            if available:
+                t = pygame.time.get_ticks() / 700.0
+                pulse = int(abs(math.sin(t)) * 60)
+                pygame.draw.circle(surface, (80, 180, 200 + pulse), (cx_i, cy_i), 11, 1)
+            scene = self.scene
+            _caps = _SPAWN_CFG.get("deployment_caps_global", [2, 5, 8, 12, 16, 20])
+            gcap  = getattr(scene, "spawn_cap_total", int(_caps[-1]))
+            cur_f  = len(scene.fighters)
+            cur_a  = len(scene.archers)
+            cur_fm = len(getattr(scene, "fire_mages", []))
+            cur_im = len(getattr(scene, "ice_mages",  []))
+            total  = cur_f + cur_a + cur_fm + cur_im
+            badge  = self.font_spell.render(
+                f"IM:{cur_im} {total}/{gcap}", True,
+                (100, 200, 255) if available else (30, 50, 80))
             surface.blit(badge, badge.get_rect(midbottom=(cx_i, y + sz - 1)))
 
         # MP cost label at top (skip badge-label spells' bottom)
@@ -483,17 +556,32 @@ class HUD:
         surface.blit(enemy_surf, (sw - enemy_surf.get_width() - 16, ey))
 
         stack_y = ey - 4
-        all_minions = list(reversed(self.scene.archers + self.scene.fighters))
+        fire_mages = list(reversed(getattr(self.scene, "fire_mages", [])))
+        ice_mages  = list(reversed(getattr(self.scene, "ice_mages",  [])))
+        all_minions = list(reversed(self.scene.archers + self.scene.fighters)) + fire_mages + ice_mages
+        fighters_set   = set(self.scene.fighters)
+        archers_set    = set(self.scene.archers)
+        fire_mages_set = set(getattr(self.scene, "fire_mages", []))
         for m in all_minions:
-            is_f = m in self.scene.fighters
-            if m.is_alive:
-                lbl_c = (100, 160, 255) if is_f else (100, 220, 120)
-                stam  = int(m.stamina)
-                stam_max = int(m.max_stamina)
-                txt   = f"{'F' if is_f else 'A'}: {m.hp}/{m.max_hp} HP  {stam}/{stam_max} SP"
+            if m in fighters_set:
+                role_lbl  = "F"
+                alive_col = (100, 160, 255)
+            elif m in archers_set:
+                role_lbl  = "A"
+                alive_col = (100, 220, 120)
+            elif m in fire_mages_set:
+                role_lbl  = "FM"
+                alive_col = (255, 140, 40)
             else:
+                role_lbl  = "IM"
+                alive_col = (80, 180, 255)
+
+            if m.is_alive:
+                txt   = f"{role_lbl}: {m.hp}/{m.max_hp} HP"
+                lbl_c = alive_col
+            else:
+                txt   = f"{role_lbl}: DEAD"
                 lbl_c = (160, 80, 80)
-                txt   = f"{'Fighter' if is_f else 'Archer'}: DEAD"
             s = self.font_small.render(txt, True, lbl_c)
             stack_y -= s.get_height() + 4
             surface.blit(s, (sw - s.get_width() - 16, stack_y))

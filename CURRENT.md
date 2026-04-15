@@ -246,6 +246,66 @@ def main():
 - Drawn as brown shaft + arrowhead dot
 - Checks `boss` for hit detection in addition to swarm enemies
 
+### Fire Mage Minion (`entities/fire_mage.py`)
+
+- Orange floating robe, glowing eyes, orbiting ember spark; size 20
+- HP: 50, speed: 65 px/s; `minion_type = "fire_mage"`
+- **Heuristic AI** (not DQN): `update_velocity(enemies, boss)` approaches/retreats/strafes relative to nearest enemy; preferred range 210 px, min safe dist 80 px
+- `try_shoot(enemies, boss)` fires a `FireMageFireball` when cooldown ready (2.5s) and a target is in range (260 px); returns the projectile to be added to the scene list
+- Fireball explodes on hit: `MageExplosion` deals AoE damage (75 px radius, 22 base) + applies **Burn** status (8 DPS for 3s) to all enemies in blast
+- `knockback_vel`, `frozen_timer`, `stamina`/`max_stamina` attributes present for system compatibility
+- **Dead state**: tombstone with orange-tinted "FM" label
+
+### Ice Mage Minion (`entities/ice_mage.py`)
+
+- Blue floating robe, counter-rotating diamond crystal; size 20
+- HP: 50, speed: 65 px/s; `minion_type = "ice_mage"`
+- **Heuristic AI**: same approach/retreat/strafe logic as Fire Mage; preferred range 200 px, min safe dist 80 px
+- `try_shoot(enemies, boss)` fires an `IceMageIceball` when cooldown ready (3.0s) and a target is in range (240 px)
+- Iceball hit: 15 direct damage + applies **Freeze** status (`frozen_timer = 2.0s`) — frozen enemies cannot move for the duration
+- **Dead state**: tombstone with blue-tinted "IM" label
+
+### Mage Projectiles (`entities/mage_projectile.py`)
+
+**FireMageFireball**
+- Moves at 310 px/s; particle trail rendered each frame
+- `update(dt, enemies, boss)` detects hits (distance ≤ combined radii); returns a `MageExplosion` on contact; marks `is_alive = False`
+
+**IceMageIceball**
+- Moves at 290 px/s; cyan particle trail
+- On hit: deals 15 damage + sets `target.frozen_timer = max(current, freeze_duration)`; marks `is_alive = False`
+
+**MageExplosion**
+- `apply(enemies, boss)`: AoE damage to all enemies within radius; sets `enemy.burn_timer = burn_duration` and `enemy.burn_dps = burn_dps` on each hit enemy
+- Animation: 2 expanding rings + orange spark particles over 0.85s
+
+**Status effect draw helpers** (used by Slime and Creeper):
+- `draw_freeze_overlay(surface, pos, size, alpha)` — blue crystalline overlay
+- `draw_burn_overlay(surface, pos, size, timer, max_timer)` — flickering orange/red overlay; intensity scales with remaining burn time
+
+### Slime Enemy (`entities/slime.py`)
+
+- Rounded blob with bobbing squash-and-stretch animation; `enemy_type = 2`
+- **3 generations**: Large (gen 0: 80 HP, size 28, speed 55), Medium (gen 1: 40 HP, size 18, speed 75), Small (gen 2: 20 HP, size 12, speed 100)
+- On death: gen 0 → spawns 2× gen 1; gen 1 → spawns 2× gen 2; gen 2 → dies outright
+- Split tracked with `_split_done` flag (prevents double-split if death detected twice in same frame)
+- Has `frozen_timer`, `burn_timer`, `burn_dps` — renders freeze/burn overlays when active
+- Melee attack: range 28 px, damage scales with generation, cooldown 1.2s; melee enabled in CombatSystem (`enemy_type not in (0, 2)` gate changed to allow Slime melee)
+- Spawns from wave 3 onward; 1 Large per 8 swarms; boss waves skip Slimes
+
+### Creeper Enemy (`entities/creeper.py`)
+
+- Pixel-art face (square eyes, horizontal mouth bar) with fuse-flash animation; `enemy_type = 4`
+- HP: 60, speed: 85 px/s, size: 22
+- **Explosion trigger**: `tick(dt, all_minions)` sets `should_explode = True` when:
+  - Any alive minion is within `trigger_range` (35 px), OR
+  - `hp < self._prev_hp` (took any damage this frame)
+- Fuse flash rate: `math.sin(flash_counter * fuse_flash_rate * π)` — face flashes faster as HP drops
+- **`CreeperExplosion`** (also in this file): `apply(minions)` deals 55 AoE damage to all alive minions within 100 px; animation: green rings + debris particles over 0.9s
+- `BattleScene` detects `creeper.should_explode`, calls `CreeperExplosion(creeper.pos)`, plays SFX, marks creeper dead
+- Does not melee (blocked by `enemy_type not in (0, 2)` check in CombatSystem; Creeper is type 4)
+- Spawns from wave 5 onward; 1 per 10 swarms; boss waves skip Creepers
+
 ### Spell Effects (`entities/spell_effect.py`)
 
 **HealingEffect**
@@ -260,6 +320,12 @@ def main():
 **FireballLanding**
 - `apply(targets)` deals damage to all alive entities (minions and enemies) within `explosion_radius`
 - Animation: inner flash + expanding rings + debris particles over 0.8s
+
+**SummonPortal**
+- Created when a summon icon is clicked (replaces instant spawn); color-coded by role: blue (fighter), green (archer), orange-red (fire_mage), cyan (ice_mage)
+- Animation: expanding ring, 8 orbiting rune dots, entry/exit flash over `duration` (default 1.2s, configurable in `config.json → summon_portal.duration`)
+- `done` flag set `True` when animation completes; `BattleScene` detects this and calls `_complete_spawn(role, pos)` to create the actual entity
+- Role and position stored so the right minion type spawns at the portal center
 
 ### Arena
 
@@ -567,7 +633,7 @@ All reward magnitudes are read from `config.json → rewards` at runtime — edi
 
 From the ResearchLab AI Master tab, the player can run off-policy training on the accumulated buffer:
 - Player specifies iterations (10–5000, adjustable in ±50 steps)
-- Cost = `max(1, round(iterations × 0.01))` coins — 10 coins per 1 000 iterations (configurable via `config.json → memory_replay.cost_per_iteration`)
+- Cost = `max(1, round(iterations × 0.1))` coins — 10 coins per 1 000 iterations (configurable via `config.json → memory_replay.cost_per_iteration`)
 - Launches a daemon thread that calls `agent.train_step()` repeatedly
 - A **live progress bar** (0–100%) is shown while training runs
 - After training, **only model checkpoints are saved** (fast); replay buffer is not re-serialized here
@@ -660,7 +726,10 @@ class MinionEnv:
 
 - **Waves 1–10**: counts from `config.json → wave.first_ten_counts` (e.g., `[3,5,7,9,12,14,16,18,19,20]`)
 - **Waves 11–100**: `min(60, 22 + (wave_index - 10) * 2)` swarm enemies
-- **Boss waves** (wave_index+1 divisible by 5): `boss_wave_swarm_count` swarms + 1 Boss
+- **Boss waves** (wave_index+1 divisible by 5): `boss_wave_swarm_count` swarms + 1 Boss (no Slimes or Creepers)
+- **Spiders**: every wave, `max(1, round(swarm_count × 0.25))` spiders
+- **Slimes**: from wave 3, `max(1, swarm_count // 8)` Large Slimes per wave (gen 0)
+- **Creepers**: from wave 5, `max(1, swarm_count // 10)` Creepers per wave
 - Spawn delay: 0.3s between enemies. Intermission: 3s with live countdown.
 
 ### Boss Wave Behavior
@@ -707,8 +776,10 @@ Config keys (`config.json → spawning`):
 Config keys (`config.json → spells`):
 ```json
 {
-  "summon_fighter": { "mp_cost": 50 },
-  "summon_archer":  { "mp_cost": 40 }
+  "summon_fighter":    { "mp_cost": 50 },
+  "summon_archer":     { "mp_cost": 40 },
+  "summon_fire_mage":  { "mp_cost": 60 },
+  "summon_ice_mage":   { "mp_cost": 55 }
 }
 ```
 
@@ -754,17 +825,17 @@ AI Master upgrades have their own cost schedule defined in `_AI_MASTER_ROWS` in 
 - **Top-center**: control strip — `[P] Pause`, `[R] Reset Brain`, `[+/-] Speed: Nx`, `[ESC] Menu`
 - **Top-right**: Player name + "⚙ XXXX"
 - **Bottom-left**: "Fighter/Archer Brain" panel — mode (DQN / Warmup / Preset+Train / Preset+Warmup), loss, **avg reward EMA**, steps, buffer fill (count/max + %), LR, PER β, Speed; "Saving..." line appended while an async checkpoint save is in progress after a wave ends
-- **Bottom-center**: Two-row spell panel — **Row 1**: MP bar (fills left to right, shows `MP XX/XX`); **Row 2**: four spell icons `[Heal] [Fireball] [Summon F] [Summon A]` — each shows MP cost at top, name/count-badge at bottom, cooldown overlay when on cooldown; summon icons show badge `F:{n}  total/global_cap` / `A:{n}  total/global_cap`; icons greyed when unavailable (global cap reached, wave inactive, or insufficient MP)
+- **Bottom-center**: Two-row spell panel — **Row 1**: MP bar (fills left to right, shows `MP XX/XX`); **Row 2**: six spell icons `[Heal] [Fireball] [Summon F] [Summon A] [Summon FM] [Summon IM]` — each shows MP cost at top, name/count-badge at bottom, cooldown overlay when on cooldown; summon icons show combined badge `total/global_cap`; icons greyed when unavailable (global cap reached, wave inactive, or insufficient MP)
 - **Bottom-right**: all fighters stacked (HP + stamina bars), all archers stacked, enemy count, boss HP bar if boss alive
 - **Spell hint**: instruction text drawn in center when a placement spell (Heal/Fireball) is selected
 - **Center overlays**: INTERMISSION countdown, GAME OVER (red-tinted), VICTORY ("All 100 waves cleared!", gold-tinted)
 
 ### Spell System
 
-`hit_test_spell_panel(pos)` on HUD returns `"healing"`, `"fireball"`, `"summon_fighter"`, `"summon_archer"`, or `None`.
+`hit_test_spell_panel(pos)` on HUD returns `"healing"`, `"fireball"`, `"summon_fighter"`, `"summon_archer"`, `"summon_fire_mage"`, `"summon_ice_mage"`, or `None`.
 
 In BattleScene:
-- Click `summon_fighter` / `summon_archer` icon → **instant**: calls `_try_spawn_minion(role)` directly (no placement)
+- Click any `summon_*` icon → calls `_try_spawn_minion(role)`: deducts MP, chooses spawn position, creates a `SummonPortal`, plays `summon_portal` SFX; actual entity created via `_complete_spawn(role, pos)` when portal animation finishes
 - Click `healing` / `fireball` icon → `_activate_spell(name)` → toggles `self.spell_mode`; checks MP and cooldown
 - Click arena with spell active → `_cast_spell(pos)`:
   - **Healing**: instantiates `HealingEffect`, applies heal, starts cooldown
@@ -776,7 +847,7 @@ In BattleScene:
 
 - `self.mp`, `self.max_mp`, `self._mp_regen` computed from `ai_master` upgrade levels
 - MP bar at bottom-center row 1, fills left to right
-- Heal costs 30 MP, Fireball costs 50 MP, Summon Fighter costs 50 MP, Summon Archer costs 40 MP — all configurable in `config.json → spells`
+- Heal costs 30 MP, Fireball costs 50 MP, Summon Fighter 50 MP, Summon Archer 40 MP, Summon Fire Mage 60 MP, Summon Ice Mage 55 MP — all configurable in `config.json → spells`
 
 ### Controls
 
@@ -788,8 +859,10 @@ In BattleScene:
 | ESC / click `[ESC]` | Return to main menu |
 | Click Heal icon | Enter healing placement mode |
 | Click Fireball icon | Enter fireball placement mode |
-| Click Summon F icon | Instantly summon a Fighter (costs MP, active wave only) |
-| Click Summon A icon | Instantly summon an Archer (costs MP, active wave only) |
+| Click Summon F icon | Begin portal animation → spawn Fighter when portal completes (costs MP, active wave only) |
+| Click Summon A icon | Begin portal animation → spawn Archer when portal completes (costs MP, active wave only) |
+| Click Summon FM icon | Begin portal animation → spawn Fire Mage when portal completes (costs MP, active wave only) |
+| Click Summon IM icon | Begin portal animation → spawn Ice Mage when portal completes (costs MP, active wave only) |
 | Right-click (during spell mode) | Cancel placement spell |
 | Click arena (spell mode active) | Cast placement spell at location |
 
@@ -819,11 +892,16 @@ ai_master/
 ├── entities/
 │   ├── minion.py            # Fighter minion (stamina + sword arc + "F" label; frozen_timer)
 │   ├── archer.py            # Archer minion (ranged, stamina, "A" label; frozen_timer)
+│   ├── fire_mage.py         # Fire Mage minion (heuristic AI; fireball AoE + Burn status)
+│   ├── ice_mage.py          # Ice Mage minion (heuristic AI; iceball + Freeze status)
+│   ├── mage_projectile.py   # FireMageFireball, IceMageIceball, MageExplosion; freeze/burn overlay helpers
 │   ├── enemy.py             # Swarm enemy (attack flash; enemy_type=0)
 │   ├── spider.py            # Spider enemy (ranged, web shot, animated legs; enemy_type=1)
 │   ├── spider_web.py        # SpiderWeb projectile (slow, applies freeze on hit)
+│   ├── slime.py             # Slime enemy (3-generation split on death; enemy_type=2)
+│   ├── creeper.py           # Creeper enemy + CreeperExplosion (proximity/damage explosion; enemy_type=4)
 │   ├── boss.py              # Boss entity + BossFireball + BossExplosion
-│   ├── spell_effect.py      # HealingEffect, FireballPending, FireballLanding
+│   ├── spell_effect.py      # HealingEffect, FireballPending, FireballLanding, SummonPortal
 │   └── projectile.py        # Arrow projectile
 ├── ai/
 │   ├── brain.py             # BrainNetwork: Transformer encoder + NoisyLinear Dueling C51 head
@@ -868,7 +946,7 @@ def update(dt, fighters, enemies, projectiles, archers, fighter_attack_dirs, bos
 - Global cap schedule (level → total): 0→2, 1→5, 2→8, 3→12, 4→16, 5→20
 - All fighters share `game_manager.fighter_agent`; all archers share `game_manager.archer_agent`
 - `MinionEnv.ally` = first alive minion of opposite type
-- `BattleScene._try_spawn_minion(role)` — checks `len(fighters) + len(archers) < self.spawn_cap_total`; called when spawn button clicked during `ACTIVE` wave
+- `BattleScene._try_spawn_minion(role)` — checks `len(fighters) + len(archers) + len(fire_mages) + len(ice_mages) < self.spawn_cap_total`; deducts MP, creates `SummonPortal`; `_complete_spawn(role, pos)` called when portal `done` flag is set
 - HUD reads `scene.spawn_cap_total` (falls back to last entry of `spawning.deployment_caps_global` from config)
 
 ---
@@ -888,36 +966,43 @@ numpy>=1.26.0             # Array operations
 
 ## 13. Last Implementation Notes
 
-> **Session-based memory buffer storage (design spec — pending implementation):**
+> **Version 1 content update — Fire Mage, Ice Mage, Slime, Creeper, SummonPortal (completed):**
 >
-> **Problem solved**
-> - Saving the full PER buffer after every wave was slow. The new design saves only model checkpoints mid-session and writes a single compact session snapshot at game-over.
+> **New minions added**
+> - `FireMage` (heuristic AI): explosive fireball AoE + Burn DoT; orange robe + orbiting ember; 50 HP, 65 px/s
+> - `IceMage` (heuristic AI): iceball + Freeze status (2s immobilize); blue robe + counter-rotating diamond; 50 HP, 65 px/s
+> - Both use the same preferred-range approach/retreat/strafe AI pattern as the Archer preset
+> - Both managed in `BattleScene.fire_mages` / `ice_mages`; pass into `MovementSystem` as part of the unified minion list; `CombatSystem` receives them via `mages=` kwarg
 >
-> **Session-based buffer save/load**
-> - `DQNAgent.save_buffer_session(folder, session_idx)`: extracts top `max_session_transitions` transitions by PER priority, writes `folder/session_{idx:04d}.pt`, deletes oldest file if folder exceeds `max_buffer_sessions`.
-> - `DQNAgent.load_buffer_sessions(folder)`: reads all `session_*.pt` files sorted ascending, inserts each at max priority into the PER buffer (oldest first, so recent sessions survive ring-buffer overflow).
-> - `GameManager.buffer_folder(name, role)` returns the buffer folder path (replaces the old `buffer_path`). Folder is created on first save.
-> - `init_agents()` calls `load_buffer_sessions` after `load_checkpoint`.
-> - Save JSON gains two new keys: `fighter_session_idx` and `archer_session_idx` (monotonically incrementing, never reset).
+> **New enemies added**
+> - `Slime` (`enemy_type=2`): 3-generation split mechanic; Large→2×Medium→2×Small; squash-and-stretch bobbing animation; takes Burn/Freeze effects; starts wave 3
+> - `Creeper` (`enemy_type=4`): explodes on damage OR proximity (≤35 px); pixel-art face with fuse flash; `CreeperExplosion` deals 55 AoE damage in 100 px radius; starts wave 5
 >
-> **Wave-end async save — model checkpoint only**
-> - `BattleScene._save_checkpoints_async()` now saves model checkpoints only (no buffer). The "Saving..." HUD indicator remains but completes much faster.
-> - `_save_run_result()` (game-over) saves model checkpoints + calls `save_buffer_session` for both agents. This is the only place the buffer is serialized.
+> **Status effects**
+> - **Burn**: `enemy.burn_timer` + `enemy.burn_dps` — applied by `MageExplosion.apply()`; ticked each frame in `BattleScene._update_active()`
+> - **Freeze**: `enemy.frozen_timer` — applied by `IceMageIceball` on hit; `MovementSystem` blocks voluntary movement while timer > 0 (same mechanism as minion freeze from SpiderWeb)
+> - Freeze and burn overlays drawn by helpers in `mage_projectile.py`
 >
-> **Research Lab Memory Replay — model checkpoint only after training**
-> - After replay training completes, only model checkpoints are saved. Buffer is not re-serialized.
+> **SummonPortal animation**
+> - All summon icons now create a `SummonPortal` (1.2s, color-coded by role) before spawning the minion
+> - MP deducted and cap checked at portal creation time; entity created when `portal.done == True`
+> - Portal SFX (`summon_portal`) procedurally generated via numpy in `sfx_manager.py`
 >
-> **Config keys added (`config.json → memory_buffer`)**
-> - `max_session_transitions`: 10000 (max transitions sampled per session file)
-> - `max_buffer_sessions`: 10 (max session files retained per role)
+> **System changes**
+> - `CombatSystem.update()`: added `mages` kwarg; `all_alive_minions` includes mages; enemy melee gate changed from `enemy_type != 0` to `enemy_type not in (0, 2)` (allows Slime melee, blocks Creeper); damage bucket key `"mage_damage_taken"` added
+> - `MovementSystem`: enemy freeze handling added (frozen enemies skip voluntary movement, position still clamped)
+> - `WaveSystem`: Slime + Creeper imports, count formulas, spawn queue tokens, wave-start thresholds; boss waves skip Slimes/Creepers
+> - `HUD`: expanded from 4 to 6 summon icons (`bar_w = 6 * 44 + 5 * 8`); global cap badge counts all 4 types
 >
-> **Prior implementation notes (still applies):**
-> - `BattleScene` tracks an EMA (α=0.05) of the accumulated reward for each stored transition: `self.latest_avg_reward` (fighter) and `self.latest_archer_avg_reward` (archer).
-> - Memory Replay result shows two lines: `F  loss:X.XXXX  avg rew:X.XXX` and `A  loss:X.XXXX  avg rew:X.XXX`.
-> - `config.json → memory_replay.cost_per_iteration` = `0.01` (10 coins per 1 000 iterations).
-> - Model checkpoint no longer embeds the buffer; backward-compat loads of old checkpoints still supported.
+> **New SFX** (procedural numpy, added to `sfx_manager.py`): `fireball_shoot`, `mage_explosion`, `iceball_shoot`, `freeze_hit`, `slime_split`, `creeper_fuse`, `creeper_explosion`, `summon_portal`
 >
-> **Known issues:**
-> - Old `{name}_{role}_buffer.pt` flat files (prior save format) will not be loaded — players upgrading from old saves will start with an empty buffer but keep their model weights.
-> - Old `.pt` checkpoints (Transformer / 16-action archer) will fail architecture check on load and silently start fresh — use `[R] Reset Brain` in-game.
-> - Frame-buffer starts with 4 zero frames; first few transitions have identical obs/next_obs — harmless in practice since these are filled within seconds.
+> **New config keys**: `fire_mage`, `ice_mage`, `slime`, `creeper`, `summon_portal` sections; `spells.summon_fire_mage`, `spells.summon_ice_mage`
+>
+> **New files**: `entities/fire_mage.py`, `entities/ice_mage.py`, `entities/mage_projectile.py`, `entities/slime.py`, `entities/creeper.py`
+>
+> **Modified files**: `entities/spell_effect.py`, `audio/sfx_manager.py`, `systems/movement_system.py`, `systems/wave_system.py`, `systems/combat_system.py`, `ui/hud.py`, `scenes/battle.py`, `config.json`
+>
+> **Known issues / design notes**:
+> - Mage enemies are not DQN-trained; they do not contribute to fighter/archer replay buffers
+> - `MinionEnv._N_ENEMY_TYPES = 4` left unchanged; Creeper (type 4) normalizes to 4/4 = 1.0, slightly above the old max — does not affect network architecture
+> - Slime split is handled in `BattleScene._update_active()` by checking `_split_done` flag; splitting injects new Slime objects directly into `self.enemies`

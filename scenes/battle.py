@@ -19,11 +19,16 @@ import math
 import random
 import pygame
 from engine.scene import BaseScene
-from entities.minion      import Minion
-from entities.archer      import Archer, ARCHER_MISS_ANGLE
-from entities.projectile  import Projectile
-from entities.spider_web  import SpiderWeb
-from entities.spell_effect import HealingEffect, FireballPending, FireballLanding
+from entities.minion        import Minion
+from entities.archer        import Archer, ARCHER_MISS_ANGLE
+from entities.fire_mage     import FireMage
+from entities.ice_mage      import IceMage
+from entities.projectile    import Projectile
+from entities.spider_web    import SpiderWeb
+from entities.mage_projectile import FireMageFireball, IceMageIceball, MageExplosion
+from entities.slime         import Slime
+from entities.creeper       import Creeper, CreeperExplosion
+from entities.spell_effect  import HealingEffect, FireballPending, FireballLanding, SummonPortal
 from systems.movement_system import MovementSystem
 from systems.combat_system   import CombatSystem
 from systems.wave_system      import WaveSystem, WaveState
@@ -66,6 +71,7 @@ _SP_CFG    = CFG["spells"]
 _AIM_CFG   = CFG["ai_master_upgrades"]
 _SPAWN_CFG = CFG.get("spawning", {})
 _STORE_INTERVAL = int(CFG.get("training", {}).get("memory_store_interval", 10))
+_PORTAL_DURATION = float(CFG.get("summon_portal", {}).get("duration", 1.2))
 
 # Knockback force for boss fireball explosions (from physics config)
 _PHYS = CFG.get("physics", {})
@@ -267,9 +273,15 @@ class BattleScene(BaseScene):
             x = cx - (n_a - 1) * spacing // 2 + i * spacing
             self.archers.append(Archer((x, cy + 50)))
 
-        self.enemies    : list = []
-        self.projectiles: list = []
-        self.spider_webs: list = []
+        self.enemies        : list = []
+        self.projectiles    : list = []
+        self.spider_webs    : list = []
+        self.fire_mages     : list[FireMage]  = []
+        self.ice_mages      : list[IceMage]   = []
+        self.mage_projectiles: list = []   # FireMageFireball | IceMageIceball
+        self.mage_explosions : list[MageExplosion] = []
+        self.creeper_explosions: list[CreeperExplosion] = []
+        self.summon_portals  : list[SummonPortal] = []
         self.spell_effects      = []
         self._pending_fireball  = None
         self.spell_mode         = None
@@ -312,6 +324,10 @@ class BattleScene(BaseScene):
         for a in self.archers:
             ally = self.fighters[0] if self.fighters else None
             self.archer_envs.append(MinionEnv(a, self.enemies, ally=ally, role="archer"))
+
+    def _all_minions(self) -> list:
+        """Return all fighter + archer + mage entities (alive or dead)."""
+        return self.fighters + self.archers + self.fire_mages + self.ice_mages
 
     def _apply_research(self):
         if not self.game_manager.save_data:
@@ -368,16 +384,19 @@ class BattleScene(BaseScene):
 
     def _try_spawn_minion(self, role: str) -> bool:
         """
-        Attempt to spawn a new minion of `role` ("fighter" or "archer") by
-        spending AI Master MP.  Only valid during an ACTIVE wave.
-        Returns True if the spawn succeeded.
+        Attempt to initiate a minion summon of `role`.
+        Deducts MP and creates a SummonPortal animation; the actual minion
+        spawns when the portal animation completes.
+        Only valid during an ACTIVE wave.
+        Returns True if the summon was initiated.
         """
         if self.wave_system.state != WaveState.ACTIVE:
             return False
 
-        spawn_key  = f"summon_{role}"
-        mp_cost    = float(_SP_CFG.get(spawn_key, {}).get("mp_cost", 50))
-        total_minions = len(self.fighters) + len(self.archers)
+        spawn_key     = f"summon_{role}"
+        mp_cost       = float(_SP_CFG.get(spawn_key, {}).get("mp_cost", 50))
+        total_minions = (len(self.fighters) + len(self.archers) +
+                         len(self.fire_mages) + len(self.ice_mages))
 
         if total_minions >= self.spawn_cap_total:
             return False
@@ -386,11 +405,20 @@ class BattleScene(BaseScene):
 
         self.mp -= mp_cost
 
-        # Random spawn position — avoid arena edges
+        # Choose a random spawn position away from arena edges
         margin = 60
         x = random.randint(ARENA_LEFT + margin, ARENA_RIGHT - margin)
         y = random.randint(ARENA_TOP  + margin, ARENA_BOTTOM - margin)
 
+        portal = SummonPortal((x, y), role=role, duration=_PORTAL_DURATION)
+        self.summon_portals.append(portal)
+        if self.sfx:
+            self.sfx.play("summon_portal")
+        return True
+
+    def _complete_spawn(self, role: str, pos) -> None:
+        """Actually spawn the minion after the portal animation completes."""
+        x, y = int(pos.x), int(pos.y)
         if role == "fighter":
             m = Minion((x, y))
             self._apply_research_single(m, "fighter")
@@ -398,15 +426,19 @@ class BattleScene(BaseScene):
             ally = self.archers[0] if self.archers else None
             self.fighter_envs.append(
                 MinionEnv(m, self.enemies, ally=ally, role="fighter"))
-        else:
+        elif role == "archer":
             a = Archer((x, y))
             self._apply_research_single(a, "archer")
             self.archers.append(a)
             ally = self.fighters[0] if self.fighters else None
             self.archer_envs.append(
                 MinionEnv(a, self.enemies, ally=ally, role="archer"))
-
-        return True
+        elif role == "fire_mage":
+            fm = FireMage((x, y))
+            self.fire_mages.append(fm)
+        elif role == "ice_mage":
+            im = IceMage((x, y))
+            self.ice_mages.append(im)
 
     # ── Events ───────────────────────────────────────────────────────────
 
@@ -422,9 +454,15 @@ class BattleScene(BaseScene):
                 return
             # Check spell icon hits (includes summon spells)
             spell = self.hud.hit_test_spell_panel(pos)
-            if spell in ("summon_fighter", "summon_archer"):
-                role = "fighter" if spell == "summon_fighter" else "archer"
-                self._try_spawn_minion(role)
+            if spell in ("summon_fighter", "summon_archer",
+                         "summon_fire_mage", "summon_ice_mage"):
+                role_map = {
+                    "summon_fighter":   "fighter",
+                    "summon_archer":    "archer",
+                    "summon_fire_mage": "fire_mage",
+                    "summon_ice_mage":  "ice_mage",
+                }
+                self._try_spawn_minion(role_map[spell])
                 return
             elif spell is not None:
                 self._activate_spell(spell)
@@ -576,7 +614,8 @@ class BattleScene(BaseScene):
             self._update_active(game_dt)
         else:
             # INTERMISSION
-            self.wave_system.update(game_dt, self.fighters, self.archers, self.enemies)
+            self.wave_system.update(game_dt, self.fighters + self.fire_mages + self.ice_mages,
+                                    self.archers, self.enemies)
 
     def _render_obs_frame(self) -> np.ndarray:
         """Render a simplified overhead view as a float32 grayscale array (H×W)."""
@@ -615,6 +654,14 @@ class BattleScene(BaseScene):
         for a in self.archers:
             if a.is_alive:
                 _fill(a.pos, a.size, _OBS_GRAY_ARCHER)
+
+        # Mages drawn with same gray intensity as fighters (allies)
+        for fm in self.fire_mages:
+            if fm.is_alive:
+                _fill(fm.pos, fm.size, _OBS_GRAY_FIGHTER)
+        for im in self.ice_mages:
+            if im.is_alive:
+                _fill(im.pos, im.size, _OBS_GRAY_ARCHER)
 
         return frame
 
@@ -681,6 +728,15 @@ class BattleScene(BaseScene):
                     a.velocity.update(dx * a.speed, dy * a.speed)
                 a.update(game_dt, ARENA_BOUNDS)
 
+        # ── Tick + move Fire Mages & Ice Mages ───────────────────────────
+        boss = self.wave_system.boss
+        for fm in self.fire_mages:
+            fm.tick(game_dt)
+            fm.update_velocity(self.enemies, boss)
+        for im in self.ice_mages:
+            im.tick(game_dt)
+            im.update_velocity(self.enemies, boss)
+
         # ── Move projectiles; detect timeout-expired arrows ──────────────
         for proj in self.projectiles:
             proj.update(game_dt)
@@ -691,19 +747,118 @@ class BattleScene(BaseScene):
         )
         self.projectiles = [p for p in self.projectiles if p.is_alive]
 
+        # ── Update mage projectiles ───────────────────────────────────────
+        new_mage_exps = []
+        for proj in self.mage_projectiles:
+            if isinstance(proj, FireMageFireball):
+                result = proj.update(game_dt, self.enemies, boss)
+                if result is not None:
+                    hits = result.apply(self.enemies, boss)
+                    for tgt, dmg in hits:
+                        self.damage_numbers.append(
+                            [float(tgt.pos.x), float(tgt.pos.y) - 18,
+                             str(dmg), (255, 130, 30), 1.0])
+                    new_mage_exps.append(result)
+                    if self.sfx:
+                        self.sfx.play("mage_explosion")
+            else:  # IceMageIceball
+                old_alive = [(e, e.is_alive, e.hp) for e in self.enemies]
+                proj.update(game_dt, self.enemies, boss)
+                # Detect freeze hits for SFX and damage numbers
+                for e, was_alive, old_hp in old_alive:
+                    if was_alive and e.hp < old_hp:
+                        dmg = old_hp - e.hp
+                        self.damage_numbers.append(
+                            [float(e.pos.x), float(e.pos.y) - 18,
+                             str(dmg), (120, 210, 255), 1.0])
+                        if self.sfx:
+                            self.sfx.play("freeze_hit")
+        self.mage_projectiles = [p for p in self.mage_projectiles if p.is_alive]
+
+        # Update existing mage explosions
+        for exp in self.mage_explosions:
+            exp.update(game_dt)
+        self.mage_explosions = [e for e in self.mage_explosions if e.is_alive]
+        self.mage_explosions.extend(new_mage_exps)
+
         # ── Spider web projectiles ────────────────────────────────────────
         for web in self.spider_webs:
             web.update(game_dt)
         self.spider_webs = [w for w in self.spider_webs if w.is_alive]
 
-        # ── Move fighters/archers/enemies ────────────────────────────────
-        boss = self.wave_system.boss
-        self.movement_system.update(game_dt, self.fighters, self.archers,
+        # ── Slime tick (animation) ────────────────────────────────────────
+        for e in self.enemies:
+            if e.is_alive and isinstance(e, Slime):
+                e.tick(game_dt)
+
+        # ── Creeper tick (proximity + fuse animation) ─────────────────────
+        all_live_minions = [m for m in self._all_minions() if m.is_alive]
+        for e in self.enemies:
+            if e.is_alive and isinstance(e, Creeper):
+                e.tick(game_dt, all_live_minions)
+
+        # ── Burn damage on enemies ────────────────────────────────────────
+        for e in self.enemies:
+            if not e.is_alive:
+                continue
+            b_timer = getattr(e, 'burn_timer', 0.0)
+            if b_timer > 0:
+                b_dps = getattr(e, 'burn_dps', 0.0)
+                dmg = b_dps * game_dt
+                e.hp = max(0, e.hp - dmg)
+                e.burn_timer = max(0.0, b_timer - game_dt)
+                if e.hp <= 0:
+                    e.is_alive = False
+
+        # ── Move fighters/archers/mages/enemies ──────────────────────────
+        all_minions_list = self.fighters + self.archers + self.fire_mages + self.ice_mages
+        self.movement_system.update(game_dt, all_minions_list, [],
                                     self.enemies, ARENA_BOUNDS, boss)
+
+        # ── Summon portals — update and spawn minions when done ───────────
+        for portal in self.summon_portals:
+            portal.update(game_dt)
+            if portal.done:
+                self._complete_spawn(portal.role, portal.pos)
+        self.summon_portals = [p for p in self.summon_portals if p.is_alive]
+
+        # ── Creeper explosions ────────────────────────────────────────────
+        exploding_creepers = [e for e in self.enemies
+                              if isinstance(e, Creeper) and e.is_alive and e.should_explode]
+        for creeper in exploding_creepers:
+            creeper.is_alive = False
+            exp = CreeperExplosion(creeper.pos, creeper.explosion_damage,
+                                   creeper.explosion_radius)
+            hits = exp.apply(all_live_minions)
+            for tgt, dmg in hits:
+                self.damage_numbers.append(
+                    [float(tgt.pos.x), float(tgt.pos.y) - 20,
+                     str(dmg), (100, 255, 60), 1.2])
+            self.creeper_explosions.append(exp)
+            if self.sfx:
+                self.sfx.play("creeper_explosion")
+        for exp in self.creeper_explosions:
+            exp.update(game_dt)
+        self.creeper_explosions = [e for e in self.creeper_explosions if e.is_alive]
+
+        # ── Slime split on death ──────────────────────────────────────────
+        new_slimes = []
+        for e in self.enemies:
+            if not e.is_alive and isinstance(e, Slime) and e.generation < 2:
+                if not getattr(e, '_split_done', False):
+                    e._split_done = True
+                    for _ in range(2):
+                        offset = pygame.Vector2(
+                            random.uniform(-15, 15), random.uniform(-15, 15))
+                        s = Slime(e.pos + offset, generation=e.generation + 1)
+                        new_slimes.append(s)
+                    if self.sfx:
+                        self.sfx.play("slime_split")
+        self.enemies.extend(new_slimes)
 
         # ── Update boss ───────────────────────────────────────────────────
         if boss is not None:
-            all_targets = [m for m in self.fighters + self.archers if m.is_alive]
+            all_targets = [m for m in self._all_minions() if m.is_alive]
             boss_events = boss.update(game_dt, all_targets)
 
             # Spawn swarms boss requests
@@ -711,7 +866,7 @@ class BattleScene(BaseScene):
                 self.wave_system.spawn_swarms_near_boss(
                     self.enemies, boss_events["swarms_to_spawn"])
 
-            # Apply boss explosion damage + knockback to minions
+            # Apply boss explosion damage + knockback to all minions (incl. mages)
             for exp in boss_events["new_explosions"]:
                 for target in all_targets:
                     if not target.is_alive:
@@ -742,10 +897,29 @@ class BattleScene(BaseScene):
             archers=self.archers,
             fighter_attack_dirs=fighter_attack_dirs,
             boss=boss,
+            mages=self.fire_mages + self.ice_mages,
         )
 
+        # ── Fire Mage shooting ────────────────────────────────────────────
+        for fm in self.fire_mages:
+            if fm.is_alive:
+                fb = fm.try_shoot(self.enemies, boss)
+                if fb is not None:
+                    self.mage_projectiles.append(fb)
+                    if self.sfx:
+                        self.sfx.play("fireball_shoot")
+
+        # ── Ice Mage shooting ─────────────────────────────────────────────
+        for im in self.ice_mages:
+            if im.is_alive:
+                ib = im.try_shoot(self.enemies, boss)
+                if ib is not None:
+                    self.mage_projectiles.append(ib)
+                    if self.sfx:
+                        self.sfx.play("iceball_shoot")
+
         # ── Spider tick + web shooting ────────────────────────────────────
-        alive_minions = [m for m in self.fighters + self.archers if m.is_alive]
+        alive_minions = [m for m in self._all_minions() if m.is_alive]
         for enemy in self.enemies:
             if not enemy.is_alive:
                 continue
@@ -759,7 +933,7 @@ class BattleScene(BaseScene):
         for web in self.spider_webs:
             if not web.is_alive:
                 continue
-            for target in self.fighters + self.archers:
+            for target in self._all_minions():
                 if not target.is_alive:
                     continue
                 hit_dist = (web.size + target.size) // 2 + 2
@@ -769,7 +943,12 @@ class BattleScene(BaseScene):
                         getattr(target, 'frozen_timer', 0.0),
                         web.freeze_duration)
                     web.is_alive = False
-                    key = "damage_taken" if target in self.fighters else "archer_damage_taken"
+                    if target in self.fighters:
+                        key = "damage_taken"
+                    elif target in self.archers:
+                        key = "archer_damage_taken"
+                    else:
+                        key = "mage_damage_taken"
                     events[key] = events.get(key, 0.0) + web.damage
                     self.damage_numbers.append(
                         [float(target.pos.x), float(target.pos.y) - 18,
@@ -816,7 +995,8 @@ class BattleScene(BaseScene):
 
         # ── Wave state ────────────────────────────────────────────────────
         prev_state = self.wave_system.state
-        self.wave_system.update(game_dt, self.fighters, self.archers, self.enemies)
+        self.wave_system.update(game_dt, self.fighters + self.fire_mages + self.ice_mages,
+                                    self.archers, self.enemies)
         new_state  = self.wave_system.state
 
         if prev_state == WaveState.ACTIVE and new_state in (WaveState.INTERMISSION,
@@ -825,6 +1005,10 @@ class BattleScene(BaseScene):
             self.waves_survived   += 1
             self.projectiles.clear()
             self.spider_webs.clear()
+            self.mage_projectiles.clear()
+            self.mage_explosions.clear()
+            self.creeper_explosions.clear()
+            self.summon_portals.clear()
             self._save_checkpoints_async()
 
         # ── Damage numbers ────────────────────────────────────────────────
@@ -954,6 +1138,9 @@ class BattleScene(BaseScene):
             getattr(a, "shots_fired", 0) for a in self.archers)
         ar["shots_hit"]         = ar.get("shots_hit",         0) + self.archer_arrow_hits
         ar["max_waves_survived"] = max(ar.get("max_waves_survived", 0), self.waves_survived)
+        # Count how many mages were ever deployed this run
+        stats["fire_mages_deployed"] = stats.get("fire_mages_deployed", 0) + len(self.fire_mages)
+        stats["ice_mages_deployed"]  = stats.get("ice_mages_deployed",  0) + len(self.ice_mages)
 
         # Increment session indices before spawning save thread, then write JSON
         name = self.game_manager.player_name
@@ -995,23 +1182,38 @@ class BattleScene(BaseScene):
                                   ARENA_BOTTOM - ARENA_TOP)
         pygame.draw.rect(surface, (255, 255, 255), arena_rect, 1)
 
-        # Enemies (swarms)
+        # Enemies (draw dead first so alive ones render on top)
         for enemy in self.enemies:
-            if enemy.is_alive:
-                enemy.draw(surface)
+            enemy.draw(surface)
+
+        # Creeper explosions (behind living enemies)
+        for exp in self.creeper_explosions:
+            exp.draw(surface)
+
+        # Mage explosions
+        for exp in self.mage_explosions:
+            exp.draw(surface)
 
         # Boss
         boss = self.wave_system.boss
         if boss is not None:
             boss.draw(surface)
 
-        # Projectiles
+        # Projectiles (arrows)
         for proj in self.projectiles:
+            proj.draw(surface)
+
+        # Mage projectiles
+        for proj in self.mage_projectiles:
             proj.draw(surface)
 
         # Spider webs
         for web in self.spider_webs:
             web.draw(surface)
+
+        # Summon portals (drawn behind minions)
+        for portal in self.summon_portals:
+            portal.draw(surface)
 
         # Spell effects
         for eff in self.spell_effects:
@@ -1022,6 +1224,10 @@ class BattleScene(BaseScene):
             a.draw(surface)
         for f in self.fighters:
             f.draw(surface)
+        for fm in self.fire_mages:
+            fm.draw(surface)
+        for im in self.ice_mages:
+            im.draw(surface)
 
         # Damage numbers
         for dn in self.damage_numbers:

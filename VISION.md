@@ -62,6 +62,8 @@ Each minion type has a distinct role, personality, and visual style:
 |---|---|---|
 | **Fighter** | DPS melee | Blue rect, labeled "F", glowing armored knight; DQN with 16-action directional attack (8 move + 8 attack) |
 | **Archer** | DPS ranged | Green rect, labeled "A", bow flash; DQN with 24-action directional shoot (8 move + 16 attack at 22.5° precision); velocity-aware observation for trajectory prediction |
+| **Fire Mage** | DPS ranged AoE + Burn | Orange floating robe, orbiting ember spark, glowing eyes; heuristic AI; fires explosive fireballs (AoE explosion + Burn DoT status) |
+| **Ice Mage** | Crowd control + Freeze | Blue floating robe, counter-rotating diamond crystal; heuristic AI; fires iceballs (low direct damage + Freeze status — immobilizes enemies for 2s) |
 | **Wizard** | DPS ranged/AoE | Floating robe, spell orbs |
 | **Healer** | Support | Soft-light aura, healing rings |
 | **Tank** | Frontline | Heavy, rune-etched armor |
@@ -78,6 +80,8 @@ Enemies are organized into **Factions**, each with distinct behaviors:
 |---|---|---|
 | **Swarm** | Massive numbers, low HP | Overwhelm by count |
 | **Spider** | Medium groups, ranged, evasive | Shoots freezing web; keeps distance; freezes minions briefly; present every wave at ~25% of swarm count |
+| **Slime** | Melee, tanky, splits on death | 3 generations (Large→2×Medium→2×Small); smaller generations are faster; susceptible to Burn and Freeze status effects |
+| **Creeper** | Proximity suicide bomber | Explodes on damage OR when within trigger range of a minion; AoE damage to all nearby minions; animated pixel-art fuse-flash face |
 | **Berserkers** | High damage, low defense | Enrage below 30% HP |
 | **Shieldbearers** | Frontline blockers | Reflect damage, must be flanked |
 | **Sorcerers** | Ranged elemental attacks | Interrupt channels, apply debuffs |
@@ -165,21 +169,24 @@ Boss waves: 8 swarms + 1 Boss (HP = 800 + wave_idx × 80).
 
 ## AI Master & Spells
 
-The player accumulates **MP** (mana points) that regenerate over time. Four spells are available:
+The player accumulates **MP** (mana points) that regenerate over time. Six spells are available:
 
 | Spell | Cost | Effect | Targeting |
 |---|---|---|---|
 | **Healing** | 30 MP | Instant AOE heal to all minions within radius | Click to place; radius shown on cursor |
 | **Fireball** | 50 MP | Meteor descends after 1s; AOE damage to enemies within explosion radius | Click to place; flight shown; radius shown |
-| **Summon Fighter** | 50 MP | Instantly deploys a new Fighter minion (only during an active wave; cap enforced) | Click icon — instant |
-| **Summon Archer** | 40 MP | Instantly deploys a new Archer minion (only during an active wave; cap enforced) | Click icon — instant |
+| **Summon Fighter** | 50 MP | Deploys a new Fighter minion via portal animation | Click icon — portal spawns at random position |
+| **Summon Archer** | 40 MP | Deploys a new Archer minion via portal animation | Click icon — portal spawns at random position |
+| **Summon Fire Mage** | 60 MP | Deploys a new Fire Mage minion via portal animation | Click icon — portal spawns at random position |
+| **Summon Ice Mage** | 55 MP | Deploys a new Ice Mage minion via portal animation | Click icon — portal spawns at random position |
 
 Spell animations:
 - **Healing**: soft expanding green circle, rising sparkles, cross shimmer.
 - **Fireball**: growing meteor descends with fire trail → multi-ring explosion + debris particles.
+- **Summon Portal**: spinning rune dots, expanding ring, flash on completion (~1.2s). Color-coded by minion type (blue/Fighter, green/Archer, orange-red/Fire Mage, cyan/Ice Mage).
 
 All spell parameters (damage, radius, cooldown, MP cost) are upgradeable in the **AI Master** menu.  
-Summon MP costs are configurable in `config.json → spells.summon_fighter / summon_archer`.
+Summon MP costs are configurable in `config.json → spells.summon_fighter / summon_archer / summon_fire_mage / summon_ice_mage`.
 
 ---
 
@@ -188,16 +195,17 @@ Summon MP costs are configurable in `config.json → spells.summon_fighter / sum
 The player can deploy multiple minions of each type before waves start. All minions of the same type **share the same brain** (Rainbow DQN agent), so their transitions all feed into one replay buffer and one network.
 
 Default: 1 Fighter + 1 Archer (fixed starting deployment, unaffected by upgrades).  
-The **Deploy Limit** upgrade raises a single **global cap** on total minions (Fighters + Archers combined). Level 0 → cap 2; fully upgraded (level 5) → cap 20. Players can allocate those slots freely across both types. The cap governs both the starting deployment and in-wave spawning combined.
+The **Deploy Limit** upgrade raises a single **global cap** on total minions (Fighters + Archers + Fire Mages + Ice Mages combined). Level 0 → cap 2; fully upgraded (level 5) → cap 20. Players can allocate those slots freely across all four types. The cap governs both the starting deployment and in-wave spawning combined.
 
 ### Dynamic In-Wave Spawning
 
-During active training waves, the AI Master can spend **MP** to summon additional minions via the **Summon Fighter** and **Summon Archer** spell icons. Newly spawned minions join immediately and contribute their experience to the same shared replay buffer as existing minions of their type.
+During active training waves, the AI Master can spend **MP** to summon additional minions via the four summon spell icons. Instead of spawning instantly, a **SummonPortal** animation plays at the chosen position (~1.2s); the minion appears when the portal completes.
 
-- Summon cost is configurable per minion type (default: 50 MP for a Fighter, 40 MP for an Archer)
-- A global cap prevents unbounded scaling (configurable; e.g., fully upgraded = 20 total across both types)
-- Summon icons appear in the bottom-centre spell panel; greyed out when global cap reached, wave not active, or insufficient MP; badge shows `F/A type count + total/cap`
+- Summon costs are configurable per minion type (default: 50 MP Fighter, 40 MP Archer, 60 MP Fire Mage, 55 MP Ice Mage)
+- A global cap prevents unbounded scaling (configurable; e.g., fully upgraded = 20 total across all types)
+- Summon icons appear in the bottom-centre spell panel; greyed out when global cap reached, wave not active, or insufficient MP; badge shows type count + total/cap
 - Dead minions from prior waves count against the cap; summoning is the only way to replace losses mid-run
+- Portal SFX plays on summon; `summon_portal` sound is procedurally generated via numpy
 
 ---
 

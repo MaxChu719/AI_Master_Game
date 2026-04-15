@@ -39,7 +39,8 @@ class CombatSystem:
                projectiles: list = None,
                archers: list = None,
                fighter_attack_dirs: list = None,
-               boss=None):
+               boss=None,
+               mages: list = None):
         """
         fighters            : list of Fighter objects
         enemies             : list of swarm Enemy objects
@@ -47,12 +48,14 @@ class CombatSystem:
         archers             : list of Archer objects
         fighter_attack_dirs : list matching fighters — (dx,dy) or None per fighter
         boss                : optional Boss (can receive damage from arrows/sword)
+        mages               : optional list of FireMage/IceMage objects (for enemy targeting)
 
         Returns events dict.
         """
         archers             = archers             or []
         projectiles         = projectiles         or []
         fighter_attack_dirs = fighter_attack_dirs or [None] * len(fighters)
+        mages               = mages               or []
 
         events = {
             "enemies_killed":      0,
@@ -73,7 +76,7 @@ class CombatSystem:
             "hits":                [],
         }
 
-        all_alive_minions = [m for m in fighters + archers if m.is_alive]
+        all_alive_minions = [m for m in fighters + archers + mages if m.is_alive]
 
         # ── Regen stamina for all alive fighters ───────────────────────────
         for f in fighters:
@@ -177,8 +180,10 @@ class CombatSystem:
         for enemy in enemies:
             if not enemy.is_alive or enemy.attack_timer > 0:
                 continue
-            if getattr(enemy, 'enemy_type', 0) != 0:
-                continue   # Spiders and other non-swarm enemies use ranged attacks
+            # Only melee-capable types: Swarm (0) and Slime (2)
+            # Spider (1) uses ranged; Creeper (4) explodes instead
+            if getattr(enemy, 'enemy_type', 0) not in (0, 2):
+                continue
             if not all_alive_minions:
                 continue
 
@@ -187,8 +192,13 @@ class CombatSystem:
             if d <= enemy.attack_range:
                 nearest.hp        -= enemy.attack_damage
                 nearest.attack_timer = 0   # irrelevant but keep struct clean
-                key = "damage_taken" if nearest in fighters else "archer_damage_taken"
-                events[key] += enemy.attack_damage
+                if nearest in fighters:
+                    key = "damage_taken"
+                elif nearest in archers:
+                    key = "archer_damage_taken"
+                else:
+                    key = "mage_damage_taken"
+                events[key] = events.get(key, 0.0) + enemy.attack_damage
                 events["hits"].append((nearest.pos.x, nearest.pos.y - 14,
                                        enemy.attack_damage, (255, 80, 80)))
                 # Knockback: push minion away from attacker
@@ -208,8 +218,13 @@ class CombatSystem:
                 d = boss.pos.distance_to(nearest.pos)
                 if d <= boss.attack_range:
                     nearest.hp -= boss.attack_damage
-                    key = "damage_taken" if nearest in fighters else "archer_damage_taken"
-                    events[key] += boss.attack_damage
+                    if nearest in fighters:
+                        key = "damage_taken"
+                    elif nearest in archers:
+                        key = "archer_damage_taken"
+                    else:
+                        key = "mage_damage_taken"
+                    events[key] = events.get(key, 0.0) + boss.attack_damage
                     events["hits"].append((nearest.pos.x, nearest.pos.y - 18,
                                            boss.attack_damage, (255, 80, 200)))
                     # Boss melee hits hard — full knockback force
