@@ -499,7 +499,7 @@ class HUD:
             if available:
                 t = pygame.time.get_ticks() / 700.0
                 pulse = int(abs(math.sin(t)) * 60)
-                pygame.draw.circle(surface, (80, 180, 200 + pulse), (cx_i, cy_i), 11, 1)
+                pygame.draw.circle(surface, (80, 180, min(255, 200 + pulse)), (cx_i, cy_i), 11, 1)
             scene = self.scene
             _caps = _SPAWN_CFG.get("deployment_caps_global", [2, 5, 8, 12, 16, 20])
             gcap  = getattr(scene, "spawn_cap_total", int(_caps[-1]))

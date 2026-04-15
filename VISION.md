@@ -81,9 +81,9 @@ Enemies are organized into **Factions**, each with distinct behaviors:
 
 | Faction | Playstyle | Special Trait |
 |---|---|---|
-| **Swarm** | Massive numbers, low HP | Overwhelm by count |
-| **Spider** | Medium groups, ranged, evasive | Shoots freezing web; keeps distance; freezes minions briefly; present every wave at ~25% of swarm count |
-| **Slime** | Melee, tanky, splits on death | 3 generations (Large→2×Medium→2×Small); smaller generations are faster; susceptible to Burn and Freeze status effects |
+| **Swarm** | Massive numbers, low HP | Overwhelm by count; leaves a tombstone grave for 3 s on death |
+| **Spider** | Medium groups, ranged, evasive | Shoots freezing web; keeps distance; freezes minions briefly; present every wave at ~25% of swarm count; leaves a grave on death |
+| **Slime** | Melee, tanky, splits on death | 3 generations (Large→2×Medium→2×Small); smaller generations are faster; susceptible to Burn and Freeze status effects; **if the dying slime is the last alive enemy the split is skipped** and the wave ends cleanly; leaves a grave on death |
 | **Creeper** | Proximity suicide bomber | Explodes on damage OR when within trigger range of a minion; AoE damage to all nearby minions; animated pixel-art fuse-flash face |
 | **Berserkers** | High damage, low defense | Enrage below 30% HP |
 | **Shieldbearers** | Frontline blockers | Reflect damage, must be flanked |

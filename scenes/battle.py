@@ -78,6 +78,10 @@ _PHYS = CFG.get("physics", {})
 _FB_KNOCKBACK_FORCE = float(_PHYS.get("knockback_force", 260.0)) * 1.3
 _MAX_KB_SPEED = float(_PHYS.get("max_knockback_speed", 600.0))
 
+# Enemy grave duration: how long a dead enemy's tombstone is shown (seconds)
+_GRAVE_DURATION = float(CFG.get("enemy", {}).get("grave_duration", 3.0))
+_GRAVE_FADE     = 0.5   # seconds before grave expires during which it fades out
+
 
 def _archer_aim_snap(archer, base_angle: float, enemies: list, boss=None) -> float:
     """
@@ -864,14 +868,30 @@ class BattleScene(BaseScene):
             if not e.is_alive and isinstance(e, Slime) and e.generation < 2:
                 if not getattr(e, '_split_done', False):
                     e._split_done = True
-                    for _ in range(2):
-                        offset = pygame.Vector2(
-                            random.uniform(-15, 15), random.uniform(-15, 15))
-                        s = Slime(e.pos + offset, generation=e.generation + 1)
-                        new_slimes.append(s)
-                    if self.sfx:
-                        self.sfx.play("slime_split")
+                    # If this slime was the last alive enemy, skip the split
+                    # so the wave ends cleanly instead of spawning new children.
+                    alive_others = sum(1 for x in self.enemies if x.is_alive)
+                    if alive_others > 0:
+                        e._grave_skip = True   # split happened — no grave
+                        for _ in range(2):
+                            offset = pygame.Vector2(
+                                random.uniform(-15, 15), random.uniform(-15, 15))
+                            s = Slime(e.pos + offset, generation=e.generation + 1)
+                            new_slimes.append(s)
+                        if self.sfx:
+                            self.sfx.play("slime_split")
+                    # else: last enemy — skip split; grave will appear instead
         self.enemies.extend(new_slimes)
+
+        # ── Enemy grave timers ────────────────────────────────────────────
+        # Initialize grave for newly dead enemies and tick existing ones down.
+        for e in self.enemies:
+            if not e.is_alive:
+                if e.grave_timer < 0.0 and not getattr(e, '_grave_skip', False):
+                    # First frame this enemy is dead → start the grave timer
+                    e.grave_timer = _GRAVE_DURATION
+                elif e.grave_timer > 0.0:
+                    e.grave_timer = max(0.0, e.grave_timer - game_dt)
 
         # ── Update boss ───────────────────────────────────────────────────
         if boss is not None:

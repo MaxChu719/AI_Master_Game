@@ -227,6 +227,7 @@ def main():
 - Chases nearest alive minion (from combined fighters+archers list), attacks on contact
 - Attack: 8 damage, 30px range, 1.0s cooldown
 - Displays yellow ring burst (0.15s) when attacking
+- On death: tombstone grave shown for `grave_duration` seconds (reddish-gray tint); fades out over the last 0.5 s
 
 ### Boss (`entities/boss.py`)
 
@@ -288,10 +289,12 @@ def main():
 - Rounded blob with bobbing squash-and-stretch animation; `enemy_type = 2`
 - **3 generations**: Large (gen 0: 80 HP, size 28, speed 55), Medium (gen 1: 40 HP, size 18, speed 75), Small (gen 2: 20 HP, size 12, speed 100)
 - On death: gen 0 → spawns 2× gen 1; gen 1 → spawns 2× gen 2; gen 2 → dies outright
+- **Last-enemy split skip**: if a gen 0 or gen 1 slime is the last alive enemy when it dies, the split is skipped — the wave ends cleanly without spawning children; `_grave_skip` flag is set only on slimes that actually split so they do not show a grave
 - Split tracked with `_split_done` flag (prevents double-split if death detected twice in same frame)
 - Has `frozen_timer`, `burn_timer`, `burn_dps` — renders freeze/burn overlays when active
 - Melee attack: range 28 px, damage scales with generation, cooldown 1.2s; melee enabled in CombatSystem (`enemy_type not in (0, 2)` gate changed to allow Slime melee)
 - Spawns from wave 3 onward; 1 Large per 8 swarms; boss waves skip Slimes
+- **Enemy graves** (all enemy types): `grave_timer` attribute (init `-1.0`); set to `grave_duration` (default 3.0 s, configurable `config.json → enemy.grave_duration`) when enemy first dies; draws a tinted tombstone via `draw_enemy_grave()` in `mage_projectile.py`; fades out over the last 0.5 s; slimes that split have `_grave_skip = True` so no grave appears for them
 
 ### Creeper Enemy (`entities/creeper.py`)
 
@@ -993,34 +996,24 @@ numpy>=1.26.0             # Array operations
 
 ## 13. Last Implementation Notes
 
-> **Version 1 RL reward & observation update (completed):**
+> **Enemy graves + last-enemy slime fix (completed):**
 >
-> **1 — Team Reward Component**
-> - `MinionEnv.get_reward()` now includes a team component scaled by `rewards.team_reward_weight` (default 0.4; set 0 to reproduce old individual-only behaviour)
-> - Team component per env: ally-kill bonus (role-differentiated), ally-death penalty, per-frame HP-norm sum bonus
-> - Fighter benefits from archer kills at `rewards.fighter.ranged_kill_bonus`; archer benefits from fighter kills at `rewards.archer.melee_kill_bonus`
-> - `BattleScene._update_active()` injects `ally_ranged_kills_this_step`, `ally_melee_kills_this_step`, `ally_deaths_this_step` into the events dict (snapshot of alive fighters+archers taken at step start; deaths counted after all combat resolves)
-> - `MinionEnv` receives `fighters_ref` and `archers_ref` constructor args (live list references from `BattleScene`) for HP-bonus and spread-penalty calculations
+> **1 — Enemy Graves**
+> - All enemy types (`Enemy`, `Spider`, `Slime`, `Creeper`) have a new `grave_timer: float = -1.0` attribute.
+> - `-1.0` = uninitialized (never died); `> 0` = grave visible; `0` = expired.
+> - In `BattleScene._update_active()` (after the slime split section), newly dead enemies with `grave_timer < 0` have it initialized to `_GRAVE_DURATION` (default 3.0 s, configurable via `config.json → enemy.grave_duration`).
+> - Each frame the timer is decremented; at 0 the grave silently disappears.
+> - Each enemy's `draw()` method now checks `not self.is_alive` first: if `grave_timer > 0` it calls `draw_enemy_grave()` with a type-specific stone tint (reddish for swarm, purplish for spider, greenish for slime, dark-green for creeper); otherwise it returns immediately.
+> - `draw_enemy_grave()` was added to `entities/mage_projectile.py` (shared helper). It renders a rounded tombstone with an engraved cross (†) onto an SRCALPHA surface for correct transparency. The last 0.5 s of the timer produce a linear fade-out.
 >
-> **2 — Positional Pressure Rewards**
-> - Fighter: +`rewards.fighter.close_bonus` per frame when within `close_range` (100 px) of nearest enemy; −`rewards.fighter.far_penalty` when beyond `far_range` (200 px)
-> - Archer: +`rewards.archer.ideal_range_bonus` per frame when 180–270 px from nearest enemy; −`rewards.archer.bad_range_penalty` when < 100 px or > 320 px
-> - Kill bonuses differentiated by method: old `fighter_kill_bonus` / `archer_kill_bonus` flat keys removed; replaced by `rewards.fighter.melee_kill_bonus` (5.0) and `rewards.archer.ranged_kill_bonus` (5.0) for own kills, with smaller cross-role bonuses in the team component
-> - All thresholds and magnitudes live in `config.json → rewards.fighter` and `rewards.archer`
+> **2 — Last-Enemy Slime Split Fix**
+> - Previously a gen 0 or gen 1 slime always split into children on death, even if it was the last alive enemy, blocking wave-clear.
+> - The split section in `BattleScene._update_active()` now counts `alive_others = sum(1 for x in self.enemies if x.is_alive)` before spawning children.
+> - If `alive_others == 0`, the split is skipped — the wave ends immediately when the last slime dies.
+> - Slimes that **do** split receive `_grave_skip = True` so no tombstone appears for them (they visually "transform" into children).
+> - Slimes that skip the split (last-enemy case) receive a normal grave.
 >
-> **3 — Ally Last Action in Observation**
-> - Vector obs expanded from **41-dim → 43-dim** (OBS_DIM constant updated)
-> - New dims [41] `ally_last_action_norm` and [42] `ally_is_attacking` appended after the 5 enemy tokens
-> - Fighter's ally (Archer) has 24 actions → normalise by 23; Archer's ally (Fighter) has 16 → normalise by 15
-> - `Minion` and `Archer` entities gain `last_action: int = 0`; `BattleScene._update_active()` writes it immediately after `select_action()` returns, before movement/combat
->
-> **4 — Spread / Anti-Stacking Penalty**
-> - Per-frame penalty in `get_reward()` for each ally within `rewards.ideal_spread_min` (100 px); magnitude = `(threshold − dist) / threshold × spread_penalty_scale` (0.05)
-> - Uses `fighters_ref` + `archers_ref` live list references; fires for both fighter and archer envs
-> - Config keys: `rewards.ideal_spread_min`, `rewards.spread_penalty_scale`
->
-> **Modified files**: `ai/minion_env.py`, `entities/minion.py`, `entities/archer.py`, `scenes/battle.py`, `config.json`
+> **Modified files**: `entities/mage_projectile.py`, `entities/enemy.py`, `entities/spider.py`, `entities/slime.py`, `entities/creeper.py`, `scenes/battle.py`, `config.json`
 > **Known issues / design notes**:
-> - Mage enemies are not DQN-trained; they do not contribute to fighter/archer replay buffers
-> - `MinionEnv._N_ENEMY_TYPES = 4` left unchanged; Creeper (type 4) normalizes to 4/4 = 1.0, slightly above the old max — does not affect network architecture
-> - Slime split is handled in `BattleScene._update_active()` by checking `_split_done` flag; splitting injects new Slime objects directly into `self.enemies`
+> - Dead enemies remain in `self.enemies` until `_advance_wave()` calls `enemies.clear()`. Their grave timers are ticked every frame during the wave but the list is not pruned mid-wave — this is intentional and keeps wave-clear logic unchanged.
+> - The grave of the very last enemy that triggers wave-clear will not be visible during the INTERMISSION countdown because `enemies.clear()` is called immediately on wave advance. Graves are only visible for enemies that die before the last one.

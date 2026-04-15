@@ -65,6 +65,8 @@ class Spider:
         self.knockback_vel  = pygame.Vector2(0, 0)
         # Animation
         self._anim_timer    = 0.0        # drives leg-wobble
+        # Grave timer: -1 = uninitialized; >0 = showing grave; 0 = expired
+        self.grave_timer    = -1.0
 
     # ------------------------------------------------------------------
     # Per-frame timer tick (called from BattleScene, not MovementSystem)
@@ -81,6 +83,11 @@ class Spider:
 
     def draw(self, surface: pygame.Surface):
         if not self.is_alive:
+            if self.grave_timer > 0:
+                from entities.mage_projectile import draw_enemy_grave
+                draw_enemy_grave(surface, self.pos, self.size,
+                                 stone=(75, 65, 98),
+                                 alpha=min(1.0, self.grave_timer / 0.5))
             return
 
         cx, cy = int(self.pos.x), int(self.pos.y)

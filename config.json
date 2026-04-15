@@ -40,7 +40,8 @@
     "size": 18,
     "attack_damage": 6,
     "attack_range": 30.0,
-    "attack_cooldown": 1.0
+    "attack_cooldown": 1.0,
+    "grave_duration": 3.0
   },
 
   "boss": {

@@ -25,8 +25,18 @@ class Enemy:
         self.velocity = pygame.Vector2(0, 0)
         # Knockback velocity — applied and decayed by MovementSystem each frame
         self.knockback_vel = pygame.Vector2(0, 0)
+        # Grave timer: -1 = uninitialized; >0 = showing grave; 0 = expired
+        self.grave_timer = -1.0
 
     def draw(self, surface: pygame.Surface):
+        if not self.is_alive:
+            if self.grave_timer > 0:
+                from entities.mage_projectile import draw_enemy_grave
+                draw_enemy_grave(surface, self.pos, self.size,
+                                 stone=(88, 72, 72),
+                                 alpha=min(1.0, self.grave_timer / 0.5))
+            return
+
         # Attack flash ring (behind body so it looks like an aura burst)
         if self.attack_flash_timer > 0:
             t = self.attack_flash_timer / 0.15
