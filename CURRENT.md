@@ -446,9 +446,9 @@ Each frame is a top-down arena-crop centered on the observing minion:
 Frame-stacking gives the network motion information (enemy velocity, approach direction).
 The frame buffer is initialised with zero frames at battle start and fills over the first 4 ticks.
 
-### Observation Space — Vector (41-dim, for preset heuristic only)
+### Observation Space — Vector (43-dim, for preset heuristic only)
 
-The preset policy (used during warmup) still runs on the 41-dim vector observation
+The preset policy (used during warmup) still runs on the 43-dim vector observation
 (`MinionEnv.get_vector_observation()`):
 
 ```
@@ -461,7 +461,13 @@ The preset policy (used during warmup) still runs on the 41-dim vector observati
 [6–10]  ally hp, x, y, stamina, is_alive
 [11+i*6 .. 11+i*6+5]  i-th nearest enemy token (i = 0..4):
   type_norm, dx_norm, dy_norm, hp_norm, vx_norm, vy_norm
+[41]    ally_last_action_norm  (ally's last action index / (ally_n_actions − 1); 0 if absent)
+[42]    ally_is_attacking      (1.0 if ally's last_action ≥ 8, i.e. an attack action)
 ```
+
+Each minion stores `last_action: int` (set to 0 at spawn); updated every step in `BattleScene`
+immediately after `select_action()` is called. Ally action space: Archer has 24 actions,
+Fighter has 16 — the correct divisor is chosen per env role.
 
 ### Action Space
 
@@ -601,33 +607,54 @@ Wall repulsion helper `_wall_repulsion(play_x, play_y)` returns a push vector wh
 
 All reward magnitudes are read from `config.json → rewards` at runtime — edit to retune without code changes.
 
-**Fighter:**
+**Fighter — individual component:**
 
 | Event | Default Reward | Config key |
 |---|---|---|
-| Melee damage dealt | +1 × damage | `fighter_damage_scale` |
-| Damage taken | −1 × damage | `fighter_damage_taken_scale` |
-| Enemy killed | +5 | `fighter_kill_bonus` |
-| Swing misses (0 enemies hit) | −2 | `fighter_miss_penalty` |
-| Death | −10 | `death_penalty` |
-| Wave cleared | 0 | `wave_cleared_bonus` |
+| Melee damage dealt | +1 × damage | `rewards.fighter_damage_scale` |
+| Damage taken | −1 × damage | `rewards.fighter_damage_taken_scale` |
+| Melee kill | +5 | `rewards.fighter.melee_kill_bonus` |
+| Swing misses (0 enemies hit) | −2 | `rewards.fighter_miss_penalty` |
+| Within `close_range` (100 px) of nearest enemy | +0.02/frame | `rewards.fighter.close_bonus` |
+| Beyond `far_range` (200 px) from nearest enemy | −0.01/frame | `rewards.fighter.far_penalty` |
+| Death | −10 | `rewards.death_penalty` |
+| Wave cleared | 0 | `rewards.wave_cleared_bonus` |
 
-**Archer:**
+**Archer — individual component:**
 
 | Event | Default Reward | Config key |
 |---|---|---|
-| Arrow damage dealt | +1 × damage | `archer_damage_scale` |
-| Damage taken | −1 × damage | `archer_damage_taken_scale` |
-| Enemy killed by arrow | +5 | `archer_kill_bonus` |
-| Shot with no enemy in cone | 0 (disabled) | `archer_miss_penalty` |
-| Arrow expires without hitting | −2 | `archer_arrow_expired_penalty` |
-| Death | −10 | `death_penalty` |
-| Wave cleared | 0 | `wave_cleared_bonus` |
+| Arrow damage dealt | +1 × damage | `rewards.archer_damage_scale` |
+| Damage taken | −1 × damage | `rewards.archer_damage_taken_scale` |
+| Enemy killed by arrow | +5 | `rewards.archer.ranged_kill_bonus` |
+| Shot with no enemy in cone | 0 (disabled) | `rewards.archer_miss_penalty` |
+| Arrow expires without hitting | −2 | `rewards.archer_arrow_expired_penalty` |
+| Within `ideal_range_min`–`ideal_range_max` (180–270 px) | +0.02/frame | `rewards.archer.ideal_range_bonus` |
+| Beyond `too_far_range` (320 px) or within `too_close_range` (100 px) | −0.01/frame | `rewards.archer.bad_range_penalty` |
+| Death | −10 | `rewards.death_penalty` |
+| Wave cleared | 0 | `rewards.wave_cleared_bonus` |
+
+**Team component** (added to both roles, scaled by `rewards.team_reward_weight` = 0.4; set to 0 for purely individual behaviour):
+
+| Event | Fighter bonus | Archer bonus | Config key |
+|---|---|---|---|
+| Ally ranged (archer) kill | +`fighter.ranged_kill_bonus` (2.0) per kill | — | `rewards.fighter.ranged_kill_bonus` |
+| Ally melee (fighter) kill | — | +`archer.melee_kill_bonus` (2.0) per kill | `rewards.archer.melee_kill_bonus` |
+| Ally dies this step | −`team_ally_death_penalty` (5.0) | −`team_ally_death_penalty` (5.0) | `rewards.team_ally_death_penalty` |
+| Per alive ally HP norm | +`team_ally_hp_bonus_scale` (0.002) × Σ(hp/max_hp) | same | `rewards.team_ally_hp_bonus_scale` |
+
+**Spread / anti-stacking penalty** (both roles):
+
+| Condition | Penalty | Config keys |
+|---|---|---|
+| Any ally within `ideal_spread_min` (100 px) | −`spread_penalty_scale` × overlap_fraction per ally | `rewards.ideal_spread_min`, `rewards.spread_penalty_scale` |
 
 **Design notes:**
 - `wave_cleared_bonus` is 0 because the AI Master can summon multiple minions during a wave; a per-wave reward would be diluted and misleading when minion counts vary.
 - `archer_miss_penalty` (no enemy in cone) is 0 because archers legitimately lead shots at predicted positions; penalising shots into empty space discourages correct predictive aiming.
 - `archer_arrow_expired_penalty` fires when a `Projectile` expires (`lifetime` elapsed) without setting `hit_enemy=True`. This penalises genuinely wasted shots while leaving predictive shots unpunished.
+- Kill bonus differentiation: fighter gains more from its own melee kills (5.0) than from team ranged kills (2.0 × weight), and vice versa for archer. This shapes role specialisation without requiring a separate learning objective.
+- Spread penalty fires per ally within threshold; scales linearly with overlap. Deters all minions stacking on one target where AoE (Creeper, Boss fireball) would wipe them simultaneously.
 
 ### Memory Replay Training
 
@@ -966,42 +993,33 @@ numpy>=1.26.0             # Array operations
 
 ## 13. Last Implementation Notes
 
-> **Version 1 content update — Fire Mage, Ice Mage, Slime, Creeper, SummonPortal (completed):**
+> **Version 1 RL reward & observation update (completed):**
 >
-> **New minions added**
-> - `FireMage` (heuristic AI): explosive fireball AoE + Burn DoT; orange robe + orbiting ember; 50 HP, 65 px/s
-> - `IceMage` (heuristic AI): iceball + Freeze status (2s immobilize); blue robe + counter-rotating diamond; 50 HP, 65 px/s
-> - Both use the same preferred-range approach/retreat/strafe AI pattern as the Archer preset
-> - Both managed in `BattleScene.fire_mages` / `ice_mages`; pass into `MovementSystem` as part of the unified minion list; `CombatSystem` receives them via `mages=` kwarg
+> **1 — Team Reward Component**
+> - `MinionEnv.get_reward()` now includes a team component scaled by `rewards.team_reward_weight` (default 0.4; set 0 to reproduce old individual-only behaviour)
+> - Team component per env: ally-kill bonus (role-differentiated), ally-death penalty, per-frame HP-norm sum bonus
+> - Fighter benefits from archer kills at `rewards.fighter.ranged_kill_bonus`; archer benefits from fighter kills at `rewards.archer.melee_kill_bonus`
+> - `BattleScene._update_active()` injects `ally_ranged_kills_this_step`, `ally_melee_kills_this_step`, `ally_deaths_this_step` into the events dict (snapshot of alive fighters+archers taken at step start; deaths counted after all combat resolves)
+> - `MinionEnv` receives `fighters_ref` and `archers_ref` constructor args (live list references from `BattleScene`) for HP-bonus and spread-penalty calculations
 >
-> **New enemies added**
-> - `Slime` (`enemy_type=2`): 3-generation split mechanic; Large→2×Medium→2×Small; squash-and-stretch bobbing animation; takes Burn/Freeze effects; starts wave 3
-> - `Creeper` (`enemy_type=4`): explodes on damage OR proximity (≤35 px); pixel-art face with fuse flash; `CreeperExplosion` deals 55 AoE damage in 100 px radius; starts wave 5
+> **2 — Positional Pressure Rewards**
+> - Fighter: +`rewards.fighter.close_bonus` per frame when within `close_range` (100 px) of nearest enemy; −`rewards.fighter.far_penalty` when beyond `far_range` (200 px)
+> - Archer: +`rewards.archer.ideal_range_bonus` per frame when 180–270 px from nearest enemy; −`rewards.archer.bad_range_penalty` when < 100 px or > 320 px
+> - Kill bonuses differentiated by method: old `fighter_kill_bonus` / `archer_kill_bonus` flat keys removed; replaced by `rewards.fighter.melee_kill_bonus` (5.0) and `rewards.archer.ranged_kill_bonus` (5.0) for own kills, with smaller cross-role bonuses in the team component
+> - All thresholds and magnitudes live in `config.json → rewards.fighter` and `rewards.archer`
 >
-> **Status effects**
-> - **Burn**: `enemy.burn_timer` + `enemy.burn_dps` — applied by `MageExplosion.apply()`; ticked each frame in `BattleScene._update_active()`
-> - **Freeze**: `enemy.frozen_timer` — applied by `IceMageIceball` on hit; `MovementSystem` blocks voluntary movement while timer > 0 (same mechanism as minion freeze from SpiderWeb)
-> - Freeze and burn overlays drawn by helpers in `mage_projectile.py`
+> **3 — Ally Last Action in Observation**
+> - Vector obs expanded from **41-dim → 43-dim** (OBS_DIM constant updated)
+> - New dims [41] `ally_last_action_norm` and [42] `ally_is_attacking` appended after the 5 enemy tokens
+> - Fighter's ally (Archer) has 24 actions → normalise by 23; Archer's ally (Fighter) has 16 → normalise by 15
+> - `Minion` and `Archer` entities gain `last_action: int = 0`; `BattleScene._update_active()` writes it immediately after `select_action()` returns, before movement/combat
 >
-> **SummonPortal animation**
-> - All summon icons now create a `SummonPortal` (1.2s, color-coded by role) before spawning the minion
-> - MP deducted and cap checked at portal creation time; entity created when `portal.done == True`
-> - Portal SFX (`summon_portal`) procedurally generated via numpy in `sfx_manager.py`
+> **4 — Spread / Anti-Stacking Penalty**
+> - Per-frame penalty in `get_reward()` for each ally within `rewards.ideal_spread_min` (100 px); magnitude = `(threshold − dist) / threshold × spread_penalty_scale` (0.05)
+> - Uses `fighters_ref` + `archers_ref` live list references; fires for both fighter and archer envs
+> - Config keys: `rewards.ideal_spread_min`, `rewards.spread_penalty_scale`
 >
-> **System changes**
-> - `CombatSystem.update()`: added `mages` kwarg; `all_alive_minions` includes mages; enemy melee gate changed from `enemy_type != 0` to `enemy_type not in (0, 2)` (allows Slime melee, blocks Creeper); damage bucket key `"mage_damage_taken"` added
-> - `MovementSystem`: enemy freeze handling added (frozen enemies skip voluntary movement, position still clamped)
-> - `WaveSystem`: Slime + Creeper imports, count formulas, spawn queue tokens, wave-start thresholds; boss waves skip Slimes/Creepers
-> - `HUD`: expanded from 4 to 6 summon icons (`bar_w = 6 * 44 + 5 * 8`); global cap badge counts all 4 types
->
-> **New SFX** (procedural numpy, added to `sfx_manager.py`): `fireball_shoot`, `mage_explosion`, `iceball_shoot`, `freeze_hit`, `slime_split`, `creeper_fuse`, `creeper_explosion`, `summon_portal`
->
-> **New config keys**: `fire_mage`, `ice_mage`, `slime`, `creeper`, `summon_portal` sections; `spells.summon_fire_mage`, `spells.summon_ice_mage`
->
-> **New files**: `entities/fire_mage.py`, `entities/ice_mage.py`, `entities/mage_projectile.py`, `entities/slime.py`, `entities/creeper.py`
->
-> **Modified files**: `entities/spell_effect.py`, `audio/sfx_manager.py`, `systems/movement_system.py`, `systems/wave_system.py`, `systems/combat_system.py`, `ui/hud.py`, `scenes/battle.py`, `config.json`
->
+> **Modified files**: `ai/minion_env.py`, `entities/minion.py`, `entities/archer.py`, `scenes/battle.py`, `config.json`
 > **Known issues / design notes**:
 > - Mage enemies are not DQN-trained; they do not contribute to fighter/archer replay buffers
 > - `MinionEnv._N_ENEMY_TYPES = 4` left unchanged; Creeper (type 4) normalizes to 4/4 = 1.0, slightly above the old max — does not affect network architecture

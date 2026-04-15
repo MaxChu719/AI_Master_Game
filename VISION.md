@@ -37,6 +37,9 @@ Players can export a minion's brain configuration and weights as a `.brain` file
 ### Live Training Visualization
 Render a small, live **loss/reward curve** as part of each minion's status card. Show the network graph (nodes and edges) in the Brain Workshop using a force-directed layout. This makes the invisible (learning) visible and exciting.
 
+### Cooperative Reward Shaping (V1)
+Each minion's reward is a blend of individual and **team** components. The team component rewards ally kills (role-differentiated: fighter benefits from archer kills and vice versa), penalises ally deaths, and gives a per-frame bonus proportional to ally HP — encouraging the squad to protect each other. A spread/anti-stacking penalty deters all minions from piling onto one target where AoE would wipe them. Role-specific positional pressure (fighters pushed toward enemies, archers pushed to preferred range) reinforces class identity from day one. All magnitudes are configurable; setting `team_reward_weight` to 0 reproduces purely individual behaviour.
+
 ### Synergy Bonuses
 Minion squads get **Synergy Bonuses** when composed thoughtfully — e.g., a Healer + 2 Fighters using the same learning algorithm get a shared experience replay buffer, making all three train faster. This rewards team-building strategy.
 

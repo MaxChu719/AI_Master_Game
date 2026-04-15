@@ -41,6 +41,8 @@ class Minion:
         self.frozen_timer = 0.0         # counts down; >0 means movement is blocked
         # Knockback velocity — applied and decayed by MovementSystem each frame
         self.knockback_vel = pygame.Vector2(0, 0)
+        # Last action index chosen by the DQN (or preset); used by ally observation
+        self.last_action = 0
 
     def draw(self, surface: pygame.Surface):
         if not self.is_alive:

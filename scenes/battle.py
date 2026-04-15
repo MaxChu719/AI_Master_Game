@@ -320,10 +320,14 @@ class BattleScene(BaseScene):
         # Primary ally for each fighter = first alive archer (env holds live ref via list)
         for f in self.fighters:
             ally = self.archers[0] if self.archers else None
-            self.fighter_envs.append(MinionEnv(f, self.enemies, ally=ally, role="fighter"))
+            self.fighter_envs.append(MinionEnv(
+                f, self.enemies, ally=ally, role="fighter",
+                fighters_ref=self.fighters, archers_ref=self.archers))
         for a in self.archers:
             ally = self.fighters[0] if self.fighters else None
-            self.archer_envs.append(MinionEnv(a, self.enemies, ally=ally, role="archer"))
+            self.archer_envs.append(MinionEnv(
+                a, self.enemies, ally=ally, role="archer",
+                fighters_ref=self.fighters, archers_ref=self.archers))
 
     def _all_minions(self) -> list:
         """Return all fighter + archer + mage entities (alive or dead)."""
@@ -424,15 +428,17 @@ class BattleScene(BaseScene):
             self._apply_research_single(m, "fighter")
             self.fighters.append(m)
             ally = self.archers[0] if self.archers else None
-            self.fighter_envs.append(
-                MinionEnv(m, self.enemies, ally=ally, role="fighter"))
+            self.fighter_envs.append(MinionEnv(
+                m, self.enemies, ally=ally, role="fighter",
+                fighters_ref=self.fighters, archers_ref=self.archers))
         elif role == "archer":
             a = Archer((x, y))
             self._apply_research_single(a, "archer")
             self.archers.append(a)
             ally = self.fighters[0] if self.fighters else None
-            self.archer_envs.append(
-                MinionEnv(a, self.enemies, ally=ally, role="archer"))
+            self.archer_envs.append(MinionEnv(
+                a, self.enemies, ally=ally, role="archer",
+                fighters_ref=self.fighters, archers_ref=self.archers))
         elif role == "fire_mage":
             fm = FireMage((x, y))
             self.fire_mages.append(fm)
@@ -702,6 +708,17 @@ class BattleScene(BaseScene):
             a_obs_list.append(obs)
             a_vobs_list.append(vobs)
             a_act_list.append(act)
+
+        # ── Update last_action on each minion (read by ally's vector obs) ──
+        for env, act in zip(self.fighter_envs, f_act_list):
+            if act is not None:
+                env.minion.last_action = act
+        for env, act in zip(self.archer_envs, a_act_list):
+            if act is not None:
+                env.minion.last_action = act
+
+        # ── Snapshot alive fighters/archers for team death tracking ────────
+        _allies_alive_before = {id(m) for m in self.fighters + self.archers if m.is_alive}
 
         # ── Set fighter velocities (16-action space: 0–7 move, 8–15 attack) ──
         fighter_attack_dirs = []
@@ -984,6 +1001,16 @@ class BattleScene(BaseScene):
         self.archer_kills              += events.get("archer_kills",          0)
         self.archer_damage             += events.get("archer_damage_dealt",   0.0)
         self.archer_arrow_hits         += events.get("arrow_hits",            0)
+
+        # ── Team reward events (injected into events dict for get_reward) ──
+        # ally_ranged_kills = archer kills (used by fighter's team component)
+        # ally_melee_kills  = fighter kills (used by archer's team component)
+        events["ally_ranged_kills_this_step"] = events.get("archer_kills", 0)
+        events["ally_melee_kills_this_step"]  = events.get("sword_kills",  0)
+        events["ally_deaths_this_step"] = sum(
+            1 for m in self.fighters + self.archers
+            if id(m) in _allies_alive_before and not m.is_alive
+        )
 
         # ── SFX ───────────────────────────────────────────────────────────
         if events.get("sword_attacks", 0) > 0:
