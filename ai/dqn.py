@@ -53,6 +53,10 @@ FIGHTER_ACTION_IS_ATTACK    = [False] * 8 + [True] * 8
 ARCHER_ACTION_TO_DIRECTION  = list(_MOVE_VECS_8) + list(_ARCHER_ATTACK_DIRS)
 ARCHER_ACTION_IS_ATTACK     = [False] * 8 + [True] * 16
 
+# Mage: 16 actions total (0-7 move, 8-15 shoot in 8 dirs) — mirrors Fighter layout
+MAGE_ACTION_TO_DIRECTION = list(_MOVE_VECS_8) + list(_FIGHTER_ATTACK_DIRS)
+MAGE_ACTION_IS_ATTACK    = [False] * 8 + [True] * 8
+
 # Backward-compat aliases (fighter tables)
 ACTION_TO_DIRECTION = FIGHTER_ACTION_TO_DIRECTION
 ACTION_IS_ATTACK    = FIGHTER_ACTION_IS_ATTACK
@@ -85,6 +89,9 @@ _ARCHER_MIN_SF  = float(_PP["archer_min_safe_dist"])
 _ARCHER_SHOOT_R = float(_PP["archer_shoot_range"])
 _ARROW_SPEED    = float(_PP["arrow_speed"])
 _WALL_SAFE_DIST = float(_PP.get("wall_safe_dist", 80.0))
+_MAGE_PREF      = float(_PP.get("mage_preferred_dist", 200.0))
+_MAGE_MIN_SF    = float(_PP.get("mage_min_safe_dist",  80.0))
+_MAGE_SHOOT_R   = float(_PP.get("mage_shoot_range",   250.0))
 
 
 def _wall_repulsion(play_x: float, play_y: float) -> tuple:
@@ -218,6 +225,57 @@ def _archer_preset_action(obs: np.ndarray) -> int:
         return _vec_to_dir_index(back_dx, back_dy, _MOVE_VECS_8)
 
     return _vec_to_dir_index(dx_n + wall_rx, dy_n + wall_ry, _MOVE_VECS_8)
+
+
+def _mage_preset_action(obs: np.ndarray) -> int:
+    """Heuristic action for Fire Mage / Ice Mage (16-action space, same layout as fighter).
+
+    Priority order:
+      1. Flee if enemy within min_safe_dist (+ wall repulsion).
+      2. Shoot (action 8-15) if enemy within shoot_range.
+      3. Approach if enemy is beyond preferred_dist.
+      4. Back off if too close but out of shoot CD (stand still / strafe).
+    """
+    enemies_rel = []
+    for i in range(_N_ENEMIES):
+        base = 11 + i * _ENEMY_TOKEN_DIM
+        dx = obs[base + 1] * _ARENA_W
+        dy = obs[base + 2] * _ARENA_H
+        if dx != 0.0 or dy != 0.0:
+            enemies_rel.append((dx, dy))
+
+    play_x = obs[1] * _ARENA_W
+    play_y = obs[2] * _ARENA_H
+    wall_rx, wall_ry = _wall_repulsion(play_x, play_y)
+
+    if not enemies_rel:
+        cx_rel = _ARENA_W / 2.0 - play_x
+        cy_rel = _ARENA_H / 2.0 - play_y
+        move_dx = cx_rel + wall_rx
+        move_dy = cy_rel + wall_ry
+        return _vec_to_dir_index(move_dx, move_dy, _MOVE_VECS_8)
+
+    dx_n, dy_n = enemies_rel[0]
+    dist_n = math.sqrt(dx_n ** 2 + dy_n ** 2)
+
+    # Flee if too close
+    too_close = [(dx, dy) for dx, dy in enemies_rel
+                 if math.sqrt(dx ** 2 + dy ** 2) < _MAGE_MIN_SF]
+    if too_close:
+        avg_dx = sum(dx for dx, _ in too_close) / len(too_close)
+        avg_dy = sum(dy for _, dy in too_close) / len(too_close)
+        flee_dx = -avg_dx + wall_rx
+        flee_dy = -avg_dy + wall_ry
+        return _vec_to_dir_index(flee_dx, flee_dy, _MOVE_VECS_8)
+
+    # Shoot if within range (stop + aim at nearest enemy)
+    if dist_n <= _MAGE_SHOOT_R:
+        return 8 + _vec_to_dir_index(dx_n, dy_n, _FIGHTER_ATTACK_DIRS)
+
+    # Approach
+    approach_dx = dx_n + wall_rx
+    approach_dy = dy_n + wall_ry
+    return _vec_to_dir_index(approach_dx, approach_dy, _MOVE_VECS_8)
 
 
 # ── SumTree for Prioritised Experience Replay ─────────────────────────────────
@@ -389,6 +447,8 @@ class DQNAgent:
         """Role-specific heuristic action from the 41-dim vector observation."""
         if self.role == "archer":
             return _archer_preset_action(obs)
+        if self.role in ("fire_mage", "ice_mage"):
+            return _mage_preset_action(obs)
         return _fighter_preset_action(obs)
 
     def apply_training_settings(self, settings: dict):

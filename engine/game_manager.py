@@ -7,8 +7,10 @@ import pygame
 _SAVES_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "saves")
 
 _DEFAULT_RESEARCH = {
-    "fighter": {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
-    "archer":  {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
+    "fighter":   {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
+    "archer":    {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
+    "fire_mage": {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0},
+    "ice_mage":  {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0},
 }
 
 _DEFAULT_AI_MASTER = {
@@ -39,6 +41,14 @@ _DEFAULT_STATS = {
         "shots_hit": 0,
         "max_waves_survived": 0,
     },
+    "fire_mage": {
+        "total_kills":  0,
+        "total_damage": 0,
+    },
+    "ice_mage": {
+        "total_kills":  0,
+        "total_damage": 0,
+    },
 }
 
 
@@ -54,8 +64,10 @@ class GameManager:
         self.player_name = ""
         self.save_data = None   # populated by new_game() or load_save()
         # Shared DQN agents (persist across battles; none until init_agents())
-        self.fighter_agent = None
-        self.archer_agent  = None
+        self.fighter_agent   = None
+        self.archer_agent    = None
+        self.fire_mage_agent = None
+        self.ice_mage_agent  = None
         os.makedirs(_SAVES_DIR, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -99,18 +111,28 @@ class GameManager:
 
         buf_size = int(CFG["dqn"]["replay_buffer_size"])
 
-        # Fighter: 16 actions (8 move + 8 attack directions)
-        # Archer:  24 actions (8 move + 16 attack directions for higher precision)
-        # Both use image observation (obs_type="image") by default.
-        self.fighter_agent = DQNAgent(action_dim=16, role="fighter",
-                                      buffer_size=buf_size, obs_type="image")
-        self.archer_agent  = DQNAgent(action_dim=24, role="archer",
-                                      buffer_size=buf_size, obs_type="image")
+        # Fighter:   16 actions (8 move + 8 attack directions)
+        # Archer:    24 actions (8 move + 16 attack directions for higher precision)
+        # Fire Mage: 16 actions (8 move + 8 shoot directions) — same layout as fighter
+        # Ice Mage:  16 actions (8 move + 8 shoot directions) — same layout as fighter
+        # All use image observation (obs_type="image") by default.
+        self.fighter_agent   = DQNAgent(action_dim=16, role="fighter",
+                                        buffer_size=buf_size, obs_type="image")
+        self.archer_agent    = DQNAgent(action_dim=24, role="archer",
+                                        buffer_size=buf_size, obs_type="image")
+        self.fire_mage_agent = DQNAgent(action_dim=16, role="fire_mage",
+                                        buffer_size=buf_size, obs_type="image")
+        self.ice_mage_agent  = DQNAgent(action_dim=16, role="ice_mage",
+                                        buffer_size=buf_size, obs_type="image")
         if self.player_name:
-            self.fighter_agent.load_checkpoint(self.brain_path(self.player_name, "fighter"))
-            self.archer_agent.load_checkpoint( self.brain_path(self.player_name, "archer"))
-            self.fighter_agent.load_buffer_sessions(self.buffer_folder(self.player_name, "fighter"))
-            self.archer_agent.load_buffer_sessions( self.buffer_folder(self.player_name, "archer"))
+            self.fighter_agent.load_checkpoint(  self.brain_path(self.player_name, "fighter"))
+            self.archer_agent.load_checkpoint(   self.brain_path(self.player_name, "archer"))
+            self.fire_mage_agent.load_checkpoint(self.brain_path(self.player_name, "fire_mage"))
+            self.ice_mage_agent.load_checkpoint( self.brain_path(self.player_name, "ice_mage"))
+            self.fighter_agent.load_buffer_sessions(  self.buffer_folder(self.player_name, "fighter"))
+            self.archer_agent.load_buffer_sessions(   self.buffer_folder(self.player_name, "archer"))
+            self.fire_mage_agent.load_buffer_sessions(self.buffer_folder(self.player_name, "fire_mage"))
+            self.ice_mage_agent.load_buffer_sessions( self.buffer_folder(self.player_name, "ice_mage"))
 
     # ------------------------------------------------------------------
     # Save / Load helpers
@@ -147,8 +169,10 @@ class GameManager:
             "research":   copy.deepcopy(_DEFAULT_RESEARCH),
             "ai_master":  copy.deepcopy(_DEFAULT_AI_MASTER),
             "stats":      copy.deepcopy(_DEFAULT_STATS),
-            "fighter_session_idx": 0,
-            "archer_session_idx":  0,
+            "fighter_session_idx":   0,
+            "archer_session_idx":    0,
+            "fire_mage_session_idx": 0,
+            "ice_mage_session_idx":  0,
         }
         self._write_save()
         self.init_agents()
@@ -160,7 +184,7 @@ class GameManager:
 
         # Ensure research structure is complete (handles old saves missing keys)
         data.setdefault("research", copy.deepcopy(_DEFAULT_RESEARCH))
-        for minion in ("fighter", "archer"):
+        for minion in _DEFAULT_RESEARCH:
             data["research"].setdefault(minion, copy.deepcopy(_DEFAULT_RESEARCH[minion]))
             for stat in _DEFAULT_RESEARCH[minion]:
                 data["research"][minion].setdefault(stat, 0)
@@ -172,13 +196,15 @@ class GameManager:
 
         # Stats
         data.setdefault("stats", copy.deepcopy(_DEFAULT_STATS))
-        for minion in ("fighter", "archer"):
+        for minion in _DEFAULT_STATS:
             data["stats"].setdefault(minion, copy.deepcopy(_DEFAULT_STATS[minion]))
             for stat in _DEFAULT_STATS[minion]:
                 data["stats"][minion].setdefault(stat, 0)
 
-        data.setdefault("fighter_session_idx", 0)
-        data.setdefault("archer_session_idx",  0)
+        data.setdefault("fighter_session_idx",   0)
+        data.setdefault("archer_session_idx",    0)
+        data.setdefault("fire_mage_session_idx", 0)
+        data.setdefault("ice_mage_session_idx",  0)
 
         self.player_name = name
         self.save_data   = data

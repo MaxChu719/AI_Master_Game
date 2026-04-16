@@ -65,8 +65,8 @@ Each minion type has a distinct role, personality, and visual style:
 |---|---|---|
 | **Fighter** | DPS melee | Blue rect, labeled "F", glowing armored knight; DQN with 16-action directional attack (8 move + 8 attack) |
 | **Archer** | DPS ranged | Green rect, labeled "A", bow flash; DQN with 24-action directional shoot (8 move + 16 attack at 22.5° precision); velocity-aware observation for trajectory prediction |
-| **Fire Mage** | DPS ranged AoE + Burn | Orange floating robe, orbiting ember spark, glowing eyes; heuristic AI; fires explosive fireballs (AoE explosion + Burn DoT status) |
-| **Ice Mage** | Crowd control + Freeze | Blue floating robe, counter-rotating diamond crystal; heuristic AI; fires iceballs (low direct damage + Freeze status — immobilizes enemies for 2s) |
+| **Fire Mage** | DPS ranged AoE + Burn | Orange floating robe, orbiting ember spark, glowing eyes; Rainbow DQN with 16-action space (8 move + 8 shoot directions); fires explosive fireballs (AoE explosion + Burn DoT status) |
+| **Ice Mage** | Crowd control + Freeze | Blue floating robe, counter-rotating diamond crystal; Rainbow DQN with 16-action space (8 move + 8 shoot directions); fires iceballs (low direct damage + Freeze status — immobilizes enemies for 2s) |
 | **Wizard** | DPS ranged/AoE | Floating robe, spell orbs |
 | **Healer** | Support | Soft-light aura, healing rings |
 | **Tank** | Frontline | Heavy, rune-etched armor |
@@ -267,8 +267,8 @@ Two tabs:
 
 | Tab | Upgrades |
 |---|---|
-| **AI Minions** | Fighter: HP, Attack, Move Speed, Atk Speed, Stamina (5 levels each) · Archer: HP, Attack, Move Speed, Stamina (5 levels each) |
-| **AI Master** | Max MP, MP Regen, Heal Amount, Heal Radius, Heal Cooldown, Fireball DMG, Fireball Radius, Fireball CD, Deploy Limit (global cap: 2→5→8→12→16→20), Memory Replay Training UI |
+| **AI Minions** | Four columns: Fighter (HP, Attack, Move Speed, Atk Speed, Stamina — 5 levels each) · Archer (same 5) · Fire Mage (HP, Attack, Move Speed, Shoot CD — 4 levels each) · Ice Mage (same 4) |
+| **AI Master** | Max MP, MP Regen, Heal Amount, Heal Radius, Heal Cooldown, Fireball DMG, Fireball Radius, Fireball CD, Deploy Limit (global cap: 2→5→8→12→16→20), Memory Replay Training UI (trains all 4 agents) |
 
 ---
 
@@ -303,7 +303,7 @@ The **Battle HUD** gives the player a live view:
 - Top-left: "Wave X/100" (red "★ BOSS WAVE ★" on boss waves)
 - Top-center: control panel strip — Pause, Reset Brain, Speed, Menu
 - Top-right: Player name + Coins
-- Bottom-left: DQN Training panel — Fighter Brain (mode, loss, avg reward EMA, steps, buffer %, LR, PER β), Archer Brain (same), Speed; shows "Saving..." badge while async checkpoint save is in progress
+- Bottom-left: DQN Training panel — Fighter Brain, Archer Brain, Fire Mage Brain, Ice Mage Brain (each shows mode, loss, avg reward EMA, steps, buffer %), Speed; shows "Saving..." badge while async checkpoint save is in progress
 - Bottom-center: Two-row spell panel — Row 1: MP bar; Row 2: Healing, Fireball, Summon Fighter, Summon Archer icons (with cooldown overlays and count badges)
 - Bottom-right: All minion HP/SP bars stacked; enemy count + boss HP if active
 - Center overlays: INTERMISSION countdown, GAME OVER, VICTORY

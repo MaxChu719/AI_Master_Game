@@ -64,11 +64,13 @@ This project is released under the **Polyform Noncommercial License 1.0.0** (see
 
 1. **Read VISION.md** to understand the full vision.
 2. **Read CURRENT.md** to understand the current implementation details.
+3. **Read CLAUDE.md** to understand the good guidelines for your tasks.
 3. **Follow the existing code style.** - Match naming conventions, import patterns, and file organization from what's already there.
 4. **Test that the game runs** after your changes. Run `python main.py` from the `ai_master/` directory and confirm no crashes. If you can't run it, at a minimum, verify there are no import errors.
 5. **Update the Last Implementation Notes** - Override the section with your implementation summary. Don't keep appending new changes to the Last Implementation Notes.
 6. **Make everything customizable in the config.json** - Whenever possible, please make all your changes customizable in the config.json.
 7. **Make good physics, sound effects, and animations** - This will make the idle-like gameplay more engaging.
+8. **Make updates on this md ifthere are inconsistency of the code and this md**. Please only make updates on this md only when you are absolutely sure there are inconsistence during your task.
 
 ### Rules & Constraints
 
@@ -162,7 +164,7 @@ def main():
 |---|---|
 | `MainMenuScene` | Start New Game (name input, override confirm) / Load Saved Game / Quit |
 | `LoadingScene` | Animated loading screen (spinning arc + dots) shown while `new_game()` or `load_save()` runs in a background thread; transitions to ResearchLab when done |
-| `ResearchLabScene` | 2-tab upgrade screen: AI Minions (Fighter + Archer columns side-by-side), AI Master; Memory Replay training UI in AI Master tab; "Start Battle" now pushes TrainingSetupScene |
+| `ResearchLabScene` | 2-tab upgrade screen: AI Minions (4-column layout: Fighter, Archer, Fire Mage, Ice Mage), AI Master; Memory Replay training UI trains all 4 agents; "Start Battle" now pushes TrainingSetupScene |
 | `TrainingSetupScene` | Pre-battle config: Mode (DQN Training / Preset+Train), LR, Warmup Preset Ratio, Min Buffer, Target Update Freq, Batch Size — applies to both agents before launching battle |
 | `BattleScene` | Core battle scene — wave combat + live Rainbow DQN training; returns to Research Lab on end |
 
@@ -251,19 +253,21 @@ def main():
 
 - Orange floating robe, glowing eyes, orbiting ember spark; size 20
 - HP: 50, speed: 65 px/s; `minion_type = "fire_mage"`
-- **Heuristic AI** (not DQN): `update_velocity(enemies, boss)` approaches/retreats/strafes relative to nearest enemy; preferred range 210 px, min safe dist 80 px
-- `try_shoot(enemies, boss)` fires a `FireMageFireball` when cooldown ready (2.5s) and a target is in range (260 px); returns the projectile to be added to the scene list
+- **Rainbow DQN** (16 actions: 8 move + 8 shoot directions); shared `game_manager.fire_mage_agent`
+- `update_velocity(enemies, boss)` used as heuristic fallback when agent is None
+- `try_shoot_aimed(base_angle, enemies, boss)` fires a `FireMageFireball` toward nearest enemy within a 90° cone of the DQN-chosen shoot direction; falls back to `try_shoot()` when no agent
 - Fireball explodes on hit: `MageExplosion` deals AoE damage (75 px radius, 22 base) + applies **Burn** status (8 DPS for 3s) to all enemies in blast
-- `knockback_vel`, `frozen_timer`, `stamina`/`max_stamina` attributes present for system compatibility
+- `last_action`, `knockback_vel`, `frozen_timer`, `stamina`/`max_stamina` attributes present for system/env compatibility
 - **Dead state**: tombstone with orange-tinted "FM" label
 
 ### Ice Mage Minion (`entities/ice_mage.py`)
 
 - Blue floating robe, counter-rotating diamond crystal; size 20
 - HP: 50, speed: 65 px/s; `minion_type = "ice_mage"`
-- **Heuristic AI**: same approach/retreat/strafe logic as Fire Mage; preferred range 200 px, min safe dist 80 px
-- `try_shoot(enemies, boss)` fires an `IceMageIceball` when cooldown ready (3.0s) and a target is in range (240 px)
+- **Rainbow DQN** (16 actions: 8 move + 8 shoot directions); shared `game_manager.ice_mage_agent`
+- `try_shoot_aimed(base_angle, enemies, boss)` fires an `IceMageIceball` toward nearest enemy within a 90° cone; falls back to `try_shoot()` when no agent
 - Iceball hit: 15 direct damage + applies **Freeze** status (`frozen_timer = 2.0s`) — frozen enemies cannot move for the duration
+- `last_action` attribute updated each frame from DQN action selection
 - **Dead state**: tombstone with blue-tinted "IM" label
 
 ### Mage Projectiles (`entities/mage_projectile.py`)
@@ -474,7 +478,7 @@ Fighter has 16 — the correct divisor is chosen per env role.
 
 ### Action Space
 
-**Fighter — 16 actions (unchanged)**
+**Fighter — 16 actions**
 
 | Index | Type   | Direction |
 |---|---|---|
@@ -490,6 +494,22 @@ Fighter has 16 — the correct divisor is chosen per env role.
 
 Archer attack direction granularity doubled (45° → 22.5°) so the agent can precisely lead fast-moving targets when velocity-lead-correcting its aim.
 The aim-snap helper in `BattleScene._archer_aim_snap()` still corrects the chosen direction angle to the nearest in-range enemy.
+
+**Fire Mage — 16 actions (same layout as Fighter)**
+
+| Index | Type   | Direction |
+|---|---|---|
+| 0–7  | Move   | 8 directions at 45° intervals |
+| 8–15 | Shoot  | 8 directions at 45° intervals |
+
+Attack actions (8–15) trigger `try_shoot_aimed(base_angle, enemies, boss)`, which finds the nearest enemy within a 90° cone of the chosen direction. Mage preset heuristic: flee if enemy within min safe dist, shoot if within attack range, approach otherwise.
+
+**Ice Mage — 16 actions (same layout as Fire Mage)**
+
+| Index | Type   | Direction |
+|---|---|---|
+| 0–7  | Move   | 8 directions at 45° intervals |
+| 8–15 | Shoot  | 8 directions at 45° intervals |
 
 ---
 
@@ -586,11 +606,13 @@ def _project_distribution(self, next_dist, rewards, dones):
 
 ### Agent Ownership
 
-Both `DQNAgent` instances live on `GameManager`:
-- `game_manager.fighter_agent` — shared by all deployed fighters
-- `game_manager.archer_agent`  — shared by all deployed archers
+All four `DQNAgent` instances live on `GameManager`:
+- `game_manager.fighter_agent`   — shared by all deployed fighters (16 actions)
+- `game_manager.archer_agent`    — shared by all deployed archers  (24 actions)
+- `game_manager.fire_mage_agent` — shared by all deployed fire mages (16 actions)
+- `game_manager.ice_mage_agent`  — shared by all deployed ice mages  (16 actions)
 
-`GameManager.init_agents()` creates agents and loads checkpoints + session buffer snapshots if a save exists. This is called by both `new_game()` and `load_save()`.
+`GameManager.init_agents()` creates all four agents and loads checkpoints + session buffer snapshots if a save exists. This is called by both `new_game()` and `load_save()`.
 
 ### Preset Policy (Warmup Exploration Fallback)
 
@@ -600,9 +622,14 @@ During warmup, agents use role-specific heuristic policies instead of pure noise
 
 **Archer preset (priority order):**
 1. Panic-flee when any enemy is within min safe distance (blended with wall repulsion).
-2. **Shoot** with velocity-lead correction if nearest enemy is in range and stamina > 25% — this fires even when mild repulsion is active, fixing the previous bug where archers never shot enemies within 150 px.
+2. **Shoot** with velocity-lead correction if nearest enemy is in range and stamina > 25%.
 3. Approach if out of shoot range.
 4. Back off to preferred range if too close but no stamina.
+
+**Fire Mage / Ice Mage preset (priority order):**
+1. Flee if any enemy within `mage_min_safe_dist` (80 px).
+2. **Shoot** (return attack action toward nearest in-range enemy) if any enemy within `mage_shoot_range` (250 px).
+3. Approach nearest enemy if beyond `mage_preferred_dist` (200 px).
 
 Wall repulsion helper `_wall_repulsion(play_x, play_y)` returns a push vector whenever the entity is within `wall_safe_dist` (80 px) of any arena edge; this vector is blended into flee/approach directions to prevent minions from getting stuck in corners.
 
@@ -675,15 +702,17 @@ The replay buffer is persisted as a **folder of per-session snapshot files** —
 
 ```
 data/saves/
-├── {name}.json                      ← includes fighter_session_idx, archer_session_idx
+├── {name}.json                      ← includes fighter/archer/fire_mage/ice_mage _session_idx
 ├── {name}_fighter.pt                ← model checkpoint
 ├── {name}_archer.pt
+├── {name}_fire_mage.pt
+├── {name}_ice_mage.pt
 ├── {name}_fighter_buffer/           ← session snapshot folder
 │   ├── session_0001.pt              ← oldest retained session
-│   ├── session_0002.pt
 │   └── session_0003.pt              ← most recent session (just written)
-└── {name}_archer_buffer/
-    └── ...
+├── {name}_archer_buffer/
+├── {name}_fire_mage_buffer/
+└── {name}_ice_mage_buffer/
 ```
 
 **Saving (game-over only):**
@@ -854,7 +883,7 @@ AI Master upgrades have their own cost schedule defined in `_AI_MASTER_ROWS` in 
 - **Top-left**: "Wave X/100" white; boss waves show "★ BOSS WAVE X/100 ★" in red
 - **Top-center**: control strip — `[P] Pause`, `[R] Reset Brain`, `[+/-] Speed: Nx`, `[ESC] Menu`
 - **Top-right**: Player name + "⚙ XXXX"
-- **Bottom-left**: "Fighter/Archer Brain" panel — mode (DQN / Warmup / Preset+Train / Preset+Warmup), loss, **avg reward EMA**, steps, buffer fill (count/max + %), LR, PER β, Speed; "Saving..." line appended while an async checkpoint save is in progress after a wave ends
+- **Bottom-left**: 4-brain DQN Training panel — Fighter Brain, Archer Brain, Fire Mage Brain, Ice Mage Brain; each shows: mode (DQN / Warmup / Preset+Train / Preset+Warmup), loss, avg reward EMA, steps, buffer %; Speed multiplier; "Saving..." line appended while async checkpoint save is in progress
 - **Bottom-center**: Two-row spell panel — **Row 1**: MP bar (fills left to right, shows `MP XX/XX`); **Row 2**: six spell icons `[Heal] [Fireball] [Summon F] [Summon A] [Summon FM] [Summon IM]` — each shows MP cost at top, name/count-badge at bottom, cooldown overlay when on cooldown; summon icons show combined badge `total/global_cap`; icons greyed when unavailable (global cap reached, wave inactive, or insufficient MP)
 - **Bottom-right**: all fighters stacked (HP + stamina bars), all archers stacked, enemy count, boss HP bar if boss alive
 - **Spell hint**: instruction text drawn in center when a placement spell (Heal/Fireball) is selected
@@ -996,24 +1025,22 @@ numpy>=1.26.0             # Array operations
 
 ## 13. Last Implementation Notes
 
-> **Enemy graves + last-enemy slime fix (completed):**
+> **Fire Mage + Ice Mage Rainbow DQN integration (completed):**
 >
-> **1 — Enemy Graves**
-> - All enemy types (`Enemy`, `Spider`, `Slime`, `Creeper`) have a new `grave_timer: float = -1.0` attribute.
-> - `-1.0` = uninitialized (never died); `> 0` = grave visible; `0` = expired.
-> - In `BattleScene._update_active()` (after the slime split section), newly dead enemies with `grave_timer < 0` have it initialized to `_GRAVE_DURATION` (default 3.0 s, configurable via `config.json → enemy.grave_duration`).
-> - Each frame the timer is decremented; at 0 the grave silently disappears.
-> - Each enemy's `draw()` method now checks `not self.is_alive` first: if `grave_timer > 0` it calls `draw_enemy_grave()` with a type-specific stone tint (reddish for swarm, purplish for spider, greenish for slime, dark-green for creeper); otherwise it returns immediately.
-> - `draw_enemy_grave()` was added to `entities/mage_projectile.py` (shared helper). It renders a rounded tombstone with an engraved cross (†) onto an SRCALPHA surface for correct transparency. The last 0.5 s of the timer produce a linear fade-out.
+> **Problem**: Fire Mage and Ice Mage had no DQN brain (heuristic-only), no upgrade columns in the Research Lab, and no HUD telemetry panel.
 >
-> **2 — Last-Enemy Slime Split Fix**
-> - Previously a gen 0 or gen 1 slime always split into children on death, even if it was the last alive enemy, blocking wave-clear.
-> - The split section in `BattleScene._update_active()` now counts `alive_others = sum(1 for x in self.enemies if x.is_alive)` before spawning children.
-> - If `alive_others == 0`, the split is skipped — the wave ends immediately when the last slime dies.
-> - Slimes that **do** split receive `_grave_skip = True` so no tombstone appears for them (they visually "transform" into children).
-> - Slimes that skip the split (last-enemy case) receive a normal grave.
+> **Changes:**
+> - `config.json` — added `rewards.fire_mage` and `rewards.ice_mage` reward configs; added `preset_policy.mage_*` params for warmup heuristic.
+> - `ai/dqn.py` — added `MAGE_ACTION_TO_DIRECTION`, `MAGE_ACTION_IS_ATTACK` constants (16-action layout mirrors Fighter); added `_mage_preset_action()` and wired it into `DQNAgent.preset_action()` for both mage roles.
+> - `ai/minion_env.py` — extended `get_reward()` to handle `fire_mage` and `ice_mage` roles using new `fire_mage_damage`/`ice_mage_damage` etc. events.
+> - `entities/fire_mage.py` and `entities/ice_mage.py` — added `last_action = 0`; added `try_shoot_aimed(base_angle, enemies, boss)` that fires at the nearest enemy within a 90° cone of the DQN-chosen direction.
+> - `engine/game_manager.py` — added `fire_mage_agent`, `ice_mage_agent` on GameManager; extended `_DEFAULT_RESEARCH`, `_DEFAULT_STATS`, save structure, and `init_agents()` to handle all 4 agents.
+> - `scenes/battle.py` — full DQN training loop for fire mages and ice mages (obs sampling, action dispatch, reward accumulation, buffer store, training thread scheduling, checkpoint + session buffer saving); fixed `_save_run_result()` to use `self.fire_mage_kills/damage` and `self.ice_mage_kills/damage`.
+> - `scenes/research_lab.py` — rewritten to a 4-column AI Minions tab (Fighter, Archer, Fire Mage, Ice Mage); mages use `MAGE_STATS` (4 stats, no Stamina); keyboard nav cycles through all 4 columns; Memory Replay now trains all 4 agents; result shows 4-line F/A/FM/IM summary.
+> - `ui/hud.py` — `_draw_ai_panel()` now shows all 4 brain panels (Fighter, Archer, FireMage, IceMage) with shared `_agent_mode_loss()` helper.
+> - `VISION.md` / `CURRENT.md` — updated Minion Roster, Research Lab, HUD, Brain System, Agent Ownership, Action Space, Preset Policy, and session buffer storage sections.
 >
-> **Modified files**: `entities/mage_projectile.py`, `entities/enemy.py`, `entities/spider.py`, `entities/slime.py`, `entities/creeper.py`, `scenes/battle.py`, `config.json`
+> **Modified files**: `config.json`, `ai/dqn.py`, `ai/minion_env.py`, `entities/fire_mage.py`, `entities/ice_mage.py`, `engine/game_manager.py`, `scenes/battle.py`, `scenes/research_lab.py`, `ui/hud.py`
 > **Known issues / design notes**:
-> - Dead enemies remain in `self.enemies` until `_advance_wave()` calls `enemies.clear()`. Their grave timers are ticked every frame during the wave but the list is not pruned mid-wave — this is intentional and keeps wave-clear logic unchanged.
-> - The grave of the very last enemy that triggers wave-clear will not be visible during the INTERMISSION countdown because `enemies.clear()` is called immediately on wave advance. Graves are only visible for enemies that die before the last one.
+> - Mage reward function uses per-step counters (`_fm_damage_step`, `_im_damage_step`) rather than per-projectile ownership; this means all fire mages in the scene share a single damage signal that frame. With one agent shared across all mages this is correct behavior.
+> - The HUD bottom-left panel is taller now (13+ lines); on very small screens it may overlap the spell panel. Panel height is computed dynamically so it will always fit if the window is tall enough.

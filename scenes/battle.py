@@ -36,6 +36,7 @@ from systems.training_system  import TrainingSystem
 from ai.dqn import (
     FIGHTER_ACTION_TO_DIRECTION, FIGHTER_ACTION_IS_ATTACK,
     ARCHER_ACTION_TO_DIRECTION,  ARCHER_ACTION_IS_ATTACK,
+    MAGE_ACTION_TO_DIRECTION,    MAGE_ACTION_IS_ATTACK,
     # backward-compat names still used internally for fighter
     ACTION_TO_DIRECTION, ACTION_IS_ATTACK,
 )
@@ -195,30 +196,47 @@ class BattleScene(BaseScene):
         self.movement_system = MovementSystem()
         self.combat_system   = CombatSystem()
         # Use shared agents from GameManager
-        self.fighter_agent = game_manager.fighter_agent
-        self.archer_agent  = game_manager.archer_agent
+        self.fighter_agent   = game_manager.fighter_agent
+        self.archer_agent    = game_manager.archer_agent
+        self.fire_mage_agent = game_manager.fire_mage_agent
+        self.ice_mage_agent  = game_manager.ice_mage_agent
         # Per-agent training threads
-        self.fighter_training = TrainingSystem()
-        self.archer_training  = TrainingSystem()
+        self.fighter_training   = TrainingSystem()
+        self.archer_training    = TrainingSystem()
+        self.fire_mage_training = TrainingSystem()
+        self.ice_mage_training  = TrainingSystem()
         self.sfx = SFXManager()
 
-        # DQN telemetry
+        # DQN telemetry — fighter
         self.latest_loss           = 0.0
         self.latest_steps          = 0
         self.latest_buffer_size    = 0
-        self.latest_avg_reward     = 0.0   # EMA of stored transition rewards (fighter)
-        self.latest_archer_loss    = 0.0
-        self.latest_archer_steps   = 0
+        self.latest_avg_reward     = 0.0
+        # DQN telemetry — archer
+        self.latest_archer_loss         = 0.0
+        self.latest_archer_steps        = 0
         self.latest_archer_buffer_size  = 0
-        self.latest_archer_avg_reward   = 0.0  # EMA of stored transition rewards (archer)
+        self.latest_archer_avg_reward   = 0.0
+        # DQN telemetry — fire mage
+        self.latest_fm_loss        = 0.0
+        self.latest_fm_steps       = 0
+        self.latest_fm_buffer_size = 0
+        self.latest_fm_avg_reward  = 0.0
+        # DQN telemetry — ice mage
+        self.latest_im_loss        = 0.0
+        self.latest_im_steps       = 0
+        self.latest_im_buffer_size = 0
+        self.latest_im_avg_reward  = 0.0
 
         # Async checkpoint saving state
         self._saving         = False   # wave-end checkpoint save in progress
         self._session_saving = False   # session-end buffer snapshot save in progress
 
         # Minion envs (list per agent role)
-        self.fighter_envs: list[MinionEnv] = []
-        self.archer_envs:  list[MinionEnv] = []
+        self.fighter_envs:   list[MinionEnv] = []
+        self.archer_envs:    list[MinionEnv] = []
+        self.fire_mage_envs: list[MinionEnv] = []
+        self.ice_mage_envs:  list[MinionEnv] = []
 
         self.paused           = False
         self.speed_multiplier = 1
@@ -314,14 +332,20 @@ class BattleScene(BaseScene):
         self.archer_kills               = 0
         self.archer_damage              = 0.0
         self.archer_arrow_hits          = 0
+        self.fire_mage_kills            = 0
+        self.fire_mage_damage           = 0.0
+        self.ice_mage_kills             = 0
+        self.ice_mage_damage            = 0.0
 
         self._apply_research()
 
     def _rebuild_envs(self):
-        """Build MinionEnv for every fighter and archer."""
-        self.fighter_envs = []
-        self.archer_envs  = []
-        # Primary ally for each fighter = first alive archer (env holds live ref via list)
+        """Build MinionEnv for every fighter, archer, fire mage, and ice mage."""
+        self.fighter_envs   = []
+        self.archer_envs    = []
+        self.fire_mage_envs = []
+        self.ice_mage_envs  = []
+        # Primary ally for each fighter = first alive archer
         for f in self.fighters:
             ally = self.archers[0] if self.archers else None
             self.fighter_envs.append(MinionEnv(
@@ -331,6 +355,14 @@ class BattleScene(BaseScene):
             ally = self.fighters[0] if self.fighters else None
             self.archer_envs.append(MinionEnv(
                 a, self.enemies, ally=ally, role="archer",
+                fighters_ref=self.fighters, archers_ref=self.archers))
+        for fm in self.fire_mages:
+            self.fire_mage_envs.append(MinionEnv(
+                fm, self.enemies, ally=None, role="fire_mage",
+                fighters_ref=self.fighters, archers_ref=self.archers))
+        for im in self.ice_mages:
+            self.ice_mage_envs.append(MinionEnv(
+                im, self.enemies, ally=None, role="ice_mage",
                 fighters_ref=self.fighters, archers_ref=self.archers))
 
     def _all_minions(self) -> list:
@@ -364,6 +396,26 @@ class BattleScene(BaseScene):
             a.max_stamina  += ar.get("stamina",      0) * rc["research_stamina_per_level"]
             a.stamina       = a.max_stamina
 
+        fmr = r.get("fire_mage", {})
+        for fm in self.fire_mages:
+            fm.max_hp       += fmr.get("hp",         0) * rc["research_hp_per_level"]
+            fm.hp            = fm.max_hp
+            fm.attack_damage += fmr.get("attack",    0) * rc["research_attack_per_level"]
+            fm.speed         += fmr.get("move_speed",0) * rc["research_speed_per_level"]
+            cd_red = fmr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
+            fm._shoot_cd     = max(0.5, fm._shoot_cd - cd_red)
+            fm.attack_cooldown = fm._shoot_cd
+
+        imr = r.get("ice_mage", {})
+        for im in self.ice_mages:
+            im.max_hp       += imr.get("hp",         0) * rc["research_hp_per_level"]
+            im.hp            = im.max_hp
+            im.attack_damage += imr.get("attack",    0) * rc["research_attack_per_level"]
+            im.speed         += imr.get("move_speed",0) * rc["research_speed_per_level"]
+            cd_red = imr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
+            im._shoot_cd     = max(0.5, im._shoot_cd - cd_red)
+            im.attack_cooldown = im._shoot_cd
+
     def _apply_research_single(self, entity, role: str):
         """Apply research upgrades to a single newly-spawned minion."""
         if not self.game_manager.save_data:
@@ -381,7 +433,7 @@ class BattleScene(BaseScene):
                 entity.attack_cooldown - fr.get("attack_speed", 0) * rc["research_atk_speed_per_level"])
             entity.max_stamina  += fr.get("stamina",     0) * rc["research_stamina_per_level"]
             entity.stamina       = entity.max_stamina
-        else:
+        elif role == "archer":
             ar = r.get("archer", {})
             entity.max_hp       += ar.get("hp",          0) * rc["research_hp_per_level"]
             entity.hp            = entity.max_hp
@@ -389,6 +441,24 @@ class BattleScene(BaseScene):
             entity.speed         += ar.get("move_speed", 0) * rc["research_speed_per_level"]
             entity.max_stamina  += ar.get("stamina",     0) * rc["research_stamina_per_level"]
             entity.stamina       = entity.max_stamina
+        elif role == "fire_mage":
+            fmr = r.get("fire_mage", {})
+            entity.max_hp       += fmr.get("hp",         0) * rc["research_hp_per_level"]
+            entity.hp            = entity.max_hp
+            entity.attack_damage += fmr.get("attack",    0) * rc["research_attack_per_level"]
+            entity.speed         += fmr.get("move_speed",0) * rc["research_speed_per_level"]
+            cd_red = fmr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
+            entity._shoot_cd     = max(0.5, entity._shoot_cd - cd_red)
+            entity.attack_cooldown = entity._shoot_cd
+        elif role == "ice_mage":
+            imr = r.get("ice_mage", {})
+            entity.max_hp       += imr.get("hp",         0) * rc["research_hp_per_level"]
+            entity.hp            = entity.max_hp
+            entity.attack_damage += imr.get("attack",    0) * rc["research_attack_per_level"]
+            entity.speed         += imr.get("move_speed",0) * rc["research_speed_per_level"]
+            cd_red = imr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
+            entity._shoot_cd     = max(0.5, entity._shoot_cd - cd_red)
+            entity.attack_cooldown = entity._shoot_cd
 
     def _try_spawn_minion(self, role: str) -> bool:
         """
@@ -445,10 +515,18 @@ class BattleScene(BaseScene):
                 fighters_ref=self.fighters, archers_ref=self.archers))
         elif role == "fire_mage":
             fm = FireMage((x, y))
+            self._apply_research_single(fm, "fire_mage")
             self.fire_mages.append(fm)
+            self.fire_mage_envs.append(MinionEnv(
+                fm, self.enemies, ally=None, role="fire_mage",
+                fighters_ref=self.fighters, archers_ref=self.archers))
         elif role == "ice_mage":
             im = IceMage((x, y))
+            self._apply_research_single(im, "ice_mage")
             self.ice_mages.append(im)
+            self.ice_mage_envs.append(MinionEnv(
+                im, self.enemies, ally=None, role="ice_mage",
+                fighters_ref=self.fighters, archers_ref=self.archers))
 
     # ── Events ───────────────────────────────────────────────────────────
 
@@ -555,10 +633,18 @@ class BattleScene(BaseScene):
         elif key == pygame.K_r:
             self.fighter_agent.reset_brain()
             self.archer_agent.reset_brain()
+            if self.fire_mage_agent:
+                self.fire_mage_agent.reset_brain()
+            if self.ice_mage_agent:
+                self.ice_mage_agent.reset_brain()
             self.latest_steps         = 0
             self.latest_loss          = 0.0
             self.latest_archer_steps  = 0
             self.latest_archer_loss   = 0.0
+            self.latest_fm_steps      = 0
+            self.latest_fm_loss       = 0.0
+            self.latest_im_steps      = 0
+            self.latest_im_loss       = 0.0
             self.brain_reset_timer    = 2.0
         elif key == pygame.K_p:
             if self.wave_system.state not in (WaveState.GAME_OVER, WaveState.VICTORY):
@@ -678,18 +764,24 @@ class BattleScene(BaseScene):
     def _update_active(self, game_dt: float):
         # ── Propagate boss reference to all envs so boss is visible ────
         current_boss = self.wave_system.boss
-        for env in self.fighter_envs + self.archer_envs:
+        for env in self.fighter_envs + self.archer_envs + self.fire_mage_envs + self.ice_mage_envs:
             env.boss = current_boss
 
         # ── Sample observations ─────────────────────────────────────────
         # Image obs (for DQN network) comes from the current frame buffer.
         # Vector obs (for preset heuristic) is computed from live game state.
         f_obs_list  = []
-        f_vobs_list = []   # vector obs for preset policy
+        f_vobs_list = []
         f_act_list  = []
         a_obs_list  = []
         a_vobs_list = []
         a_act_list  = []
+        fm_obs_list = []
+        fm_vobs_list = []
+        fm_act_list = []
+        im_obs_list = []
+        im_vobs_list = []
+        im_act_list = []
 
         for env in self.fighter_envs:
             if env.minion.is_alive:
@@ -713,11 +805,39 @@ class BattleScene(BaseScene):
             a_vobs_list.append(vobs)
             a_act_list.append(act)
 
+        for env in self.fire_mage_envs:
+            if env.minion.is_alive and self.fire_mage_agent:
+                obs  = env.get_observation()
+                vobs = env.get_vector_observation()
+                act  = self.fire_mage_agent.select_action(obs, preset_obs=vobs)
+            else:
+                obs, vobs, act = None, None, None
+            fm_obs_list.append(obs)
+            fm_vobs_list.append(vobs)
+            fm_act_list.append(act)
+
+        for env in self.ice_mage_envs:
+            if env.minion.is_alive and self.ice_mage_agent:
+                obs  = env.get_observation()
+                vobs = env.get_vector_observation()
+                act  = self.ice_mage_agent.select_action(obs, preset_obs=vobs)
+            else:
+                obs, vobs, act = None, None, None
+            im_obs_list.append(obs)
+            im_vobs_list.append(vobs)
+            im_act_list.append(act)
+
         # ── Update last_action on each minion (read by ally's vector obs) ──
         for env, act in zip(self.fighter_envs, f_act_list):
             if act is not None:
                 env.minion.last_action = act
         for env, act in zip(self.archer_envs, a_act_list):
+            if act is not None:
+                env.minion.last_action = act
+        for env, act in zip(self.fire_mage_envs, fm_act_list):
+            if act is not None:
+                env.minion.last_action = act
+        for env, act in zip(self.ice_mage_envs, im_act_list):
             if act is not None:
                 env.minion.last_action = act
 
@@ -749,14 +869,41 @@ class BattleScene(BaseScene):
                     a.velocity.update(dx * a.speed, dy * a.speed)
                 a.update(game_dt, ARENA_BOUNDS)
 
-        # ── Tick + move Fire Mages & Ice Mages ───────────────────────────
+        # ── Tick Fire Mages & Ice Mages; apply DQN-controlled movement ───
         boss = self.wave_system.boss
-        for fm in self.fire_mages:
+        # Lists to hold DQN-triggered shoot requests (processed after combat)
+        _fm_dqn_shots: list = []   # (fire_mage, base_angle)
+        _im_dqn_shots: list = []   # (ice_mage,  base_angle)
+
+        for fm, act in zip(self.fire_mages, fm_act_list):
             fm.tick(game_dt)
-            fm.update_velocity(self.enemies, boss)
-        for im in self.ice_mages:
+            if not fm.is_alive:
+                continue
+            if act is not None and self.fire_mage_agent:
+                if MAGE_ACTION_IS_ATTACK[act]:
+                    fm.velocity.update(0, 0)
+                    dx, dy = MAGE_ACTION_TO_DIRECTION[act]
+                    _fm_dqn_shots.append((fm, math.atan2(dy, dx)))
+                else:
+                    dx, dy = MAGE_ACTION_TO_DIRECTION[act]
+                    fm.velocity.update(dx * fm.speed, dy * fm.speed)
+            else:
+                fm.update_velocity(self.enemies, boss)
+
+        for im, act in zip(self.ice_mages, im_act_list):
             im.tick(game_dt)
-            im.update_velocity(self.enemies, boss)
+            if not im.is_alive:
+                continue
+            if act is not None and self.ice_mage_agent:
+                if MAGE_ACTION_IS_ATTACK[act]:
+                    im.velocity.update(0, 0)
+                    dx, dy = MAGE_ACTION_TO_DIRECTION[act]
+                    _im_dqn_shots.append((im, math.atan2(dy, dx)))
+                else:
+                    dx, dy = MAGE_ACTION_TO_DIRECTION[act]
+                    im.velocity.update(dx * im.speed, dy * im.speed)
+            else:
+                im.update_velocity(self.enemies, boss)
 
         # ── Move projectiles; detect timeout-expired arrows ──────────────
         for proj in self.projectiles:
@@ -768,14 +915,23 @@ class BattleScene(BaseScene):
         )
         self.projectiles = [p for p in self.projectiles if p.is_alive]
 
-        # ── Update mage projectiles ───────────────────────────────────────
+        # ── Update mage projectiles (track per-type damage/kills for rewards) ──
         new_mage_exps = []
+        _fm_damage_step = 0.0
+        _fm_kills_step  = 0
+        _im_damage_step = 0.0
+        _im_kills_step  = 0
+        _im_freezes_step = 0
+
         for proj in self.mage_projectiles:
             if isinstance(proj, FireMageFireball):
                 result = proj.update(game_dt, self.enemies, boss)
                 if result is not None:
                     hits = result.apply(self.enemies, boss)
                     for tgt, dmg in hits:
+                        _fm_damage_step += dmg
+                        if not tgt.is_alive:
+                            _fm_kills_step += 1
                         self.damage_numbers.append(
                             [float(tgt.pos.x), float(tgt.pos.y) - 18,
                              str(dmg), (255, 130, 30), 1.0])
@@ -783,15 +939,23 @@ class BattleScene(BaseScene):
                     if self.sfx:
                         self.sfx.play("mage_explosion")
             else:  # IceMageIceball
-                old_alive = [(e, e.is_alive, e.hp) for e in self.enemies]
+                old_hp_map   = {id(e): e.hp        for e in self.enemies if e.is_alive}
+                old_alive_ids = {id(e) for e in self.enemies if e.is_alive}
                 proj.update(game_dt, self.enemies, boss)
-                # Detect freeze hits for SFX and damage numbers
-                for e, was_alive, old_hp in old_alive:
-                    if was_alive and e.hp < old_hp:
-                        dmg = old_hp - e.hp
+                for e in self.enemies:
+                    if id(e) not in old_alive_ids:
+                        continue
+                    old_hp = old_hp_map.get(id(e), e.hp)
+                    dmg    = old_hp - e.hp
+                    if dmg > 0:
+                        _im_damage_step += dmg
+                        if not e.is_alive:
+                            _im_kills_step += 1
+                        if getattr(e, 'frozen_timer', 0.0) > 0:
+                            _im_freezes_step += 1
                         self.damage_numbers.append(
                             [float(e.pos.x), float(e.pos.y) - 18,
-                             str(dmg), (120, 210, 255), 1.0])
+                             str(int(dmg)), (120, 210, 255), 1.0])
                         if self.sfx:
                             self.sfx.play("freeze_hit")
         self.mage_projectiles = [p for p in self.mage_projectiles if p.is_alive]
@@ -937,23 +1101,40 @@ class BattleScene(BaseScene):
             mages=self.fire_mages + self.ice_mages,
         )
 
-        # ── Fire Mage shooting ────────────────────────────────────────────
-        for fm in self.fire_mages:
+        # ── Fire Mage shooting (DQN-triggered or heuristic fallback) ────────
+        for fm, base_angle in _fm_dqn_shots:
             if fm.is_alive:
-                fb = fm.try_shoot(self.enemies, boss)
+                fb = fm.try_shoot_aimed(base_angle, self.enemies, boss)
                 if fb is not None:
                     self.mage_projectiles.append(fb)
                     if self.sfx:
                         self.sfx.play("fireball_shoot")
+        # Fallback: fire mages without a DQN agent use pure heuristic
+        if not self.fire_mage_agent:
+            for fm in self.fire_mages:
+                if fm.is_alive:
+                    fb = fm.try_shoot(self.enemies, boss)
+                    if fb is not None:
+                        self.mage_projectiles.append(fb)
+                        if self.sfx:
+                            self.sfx.play("fireball_shoot")
 
-        # ── Ice Mage shooting ─────────────────────────────────────────────
-        for im in self.ice_mages:
+        # ── Ice Mage shooting (DQN-triggered or heuristic fallback) ──────────
+        for im, base_angle in _im_dqn_shots:
             if im.is_alive:
-                ib = im.try_shoot(self.enemies, boss)
+                ib = im.try_shoot_aimed(base_angle, self.enemies, boss)
                 if ib is not None:
                     self.mage_projectiles.append(ib)
                     if self.sfx:
                         self.sfx.play("iceball_shoot")
+        if not self.ice_mage_agent:
+            for im in self.ice_mages:
+                if im.is_alive:
+                    ib = im.try_shoot(self.enemies, boss)
+                    if ib is not None:
+                        self.mage_projectiles.append(ib)
+                        if self.sfx:
+                            self.sfx.play("iceball_shoot")
 
         # ── Spider tick + web shooting ────────────────────────────────────
         alive_minions = [m for m in self._all_minions() if m.is_alive]
@@ -1021,6 +1202,17 @@ class BattleScene(BaseScene):
         self.archer_kills              += events.get("archer_kills",          0)
         self.archer_damage             += events.get("archer_damage_dealt",   0.0)
         self.archer_arrow_hits         += events.get("arrow_hits",            0)
+        self.fire_mage_kills           += _fm_kills_step
+        self.fire_mage_damage          += _fm_damage_step
+        self.ice_mage_kills            += _im_kills_step
+        self.ice_mage_damage           += _im_damage_step
+
+        # ── Mage damage/kill events (injected for mage reward functions) ──────
+        events["fire_mage_damage"] = _fm_damage_step
+        events["fire_mage_kills"]  = _fm_kills_step
+        events["ice_mage_damage"]  = _im_damage_step
+        events["ice_mage_kills"]   = _im_kills_step
+        events["ice_mage_freezes"] = _im_freezes_step
 
         # ── Team reward events (injected into events dict for get_reward) ──
         # ally_ranged_kills = archer kills (used by fighter's team component)
@@ -1121,6 +1313,60 @@ class BattleScene(BaseScene):
             self.latest_archer_steps = result["steps"]
         self.archer_training.schedule_training(self.archer_agent)
 
+        # ── RL training — fire mage ───────────────────────────────────────
+        if self.fire_mage_agent:
+            for obs, act, env in zip(fm_obs_list, fm_act_list, self.fire_mage_envs):
+                if obs is None:
+                    continue
+                env.frame_counter += 1
+                reward = env.get_reward(events)
+                env._accumulated_reward += reward
+                env.capture_frame(post_frame)
+                next_obs = env.get_observation()
+                done     = env.is_done()
+                if env.frame_counter % _STORE_INTERVAL == 0 or done:
+                    acc = env._accumulated_reward
+                    self.fire_mage_agent.store_transition(obs, act, acc, next_obs, done)
+                    self.latest_fm_avg_reward = (
+                        0.95 * self.latest_fm_avg_reward + 0.05 * acc)
+                    env._accumulated_reward = 0.0
+                if done:
+                    env.frame_counter = 0
+                    env._accumulated_reward = 0.0
+            self.latest_fm_buffer_size = self.fire_mage_agent.tree.size
+            result = self.fire_mage_training.collect_result()
+            if result and result.get("steps", 0) > 0:
+                self.latest_fm_loss  = result["loss"]
+                self.latest_fm_steps = result["steps"]
+            self.fire_mage_training.schedule_training(self.fire_mage_agent)
+
+        # ── RL training — ice mage ────────────────────────────────────────
+        if self.ice_mage_agent:
+            for obs, act, env in zip(im_obs_list, im_act_list, self.ice_mage_envs):
+                if obs is None:
+                    continue
+                env.frame_counter += 1
+                reward = env.get_reward(events)
+                env._accumulated_reward += reward
+                env.capture_frame(post_frame)
+                next_obs = env.get_observation()
+                done     = env.is_done()
+                if env.frame_counter % _STORE_INTERVAL == 0 or done:
+                    acc = env._accumulated_reward
+                    self.ice_mage_agent.store_transition(obs, act, acc, next_obs, done)
+                    self.latest_im_avg_reward = (
+                        0.95 * self.latest_im_avg_reward + 0.05 * acc)
+                    env._accumulated_reward = 0.0
+                if done:
+                    env.frame_counter = 0
+                    env._accumulated_reward = 0.0
+            self.latest_im_buffer_size = self.ice_mage_agent.tree.size
+            result = self.ice_mage_training.collect_result()
+            if result and result.get("steps", 0) > 0:
+                self.latest_im_loss  = result["loss"]
+                self.latest_im_steps = result["steps"]
+            self.ice_mage_training.schedule_training(self.ice_mage_agent)
+
     # ── Async checkpoint save ─────────────────────────────────────────────
 
     def _save_checkpoints_async(self):
@@ -1135,12 +1381,18 @@ class BattleScene(BaseScene):
         self._saving = True
         fa  = self.fighter_agent
         aa  = self.archer_agent
+        fma = self.fire_mage_agent
+        ima = self.ice_mage_agent
         gm  = self.game_manager
 
         def _do_save():
             try:
                 fa.save_checkpoint(gm.brain_path(name, "fighter"))
                 aa.save_checkpoint(gm.brain_path(name, "archer"))
+                if fma:
+                    fma.save_checkpoint(gm.brain_path(name, "fire_mage"))
+                if ima:
+                    ima.save_checkpoint(gm.brain_path(name, "ice_mage"))
             finally:
                 self._saving = False
 
@@ -1189,13 +1441,25 @@ class BattleScene(BaseScene):
         stats["fire_mages_deployed"] = stats.get("fire_mages_deployed", 0) + len(self.fire_mages)
         stats["ice_mages_deployed"]  = stats.get("ice_mages_deployed",  0) + len(self.ice_mages)
 
+        # Mage cumulative stats
+        fms = stats.setdefault("fire_mage", {})
+        fms["total_kills"]  = fms.get("total_kills",  0) + int(self.fire_mage_kills)
+        fms["total_damage"] = fms.get("total_damage", 0) + int(self.fire_mage_damage)
+        ims = stats.setdefault("ice_mage", {})
+        ims["total_kills"]  = ims.get("total_kills",  0) + int(self.ice_mage_kills)
+        ims["total_damage"] = ims.get("total_damage", 0) + int(self.ice_mage_damage)
+
         # Increment session indices before spawning save thread, then write JSON
         name = self.game_manager.player_name
         sd   = self.game_manager.save_data
-        f_idx = sd.get("fighter_session_idx", 0)
-        a_idx = sd.get("archer_session_idx",  0)
-        sd["fighter_session_idx"] = f_idx + 1
-        sd["archer_session_idx"]  = a_idx + 1
+        f_idx  = sd.get("fighter_session_idx",   0)
+        a_idx  = sd.get("archer_session_idx",    0)
+        fm_idx = sd.get("fire_mage_session_idx", 0)
+        im_idx = sd.get("ice_mage_session_idx",  0)
+        sd["fighter_session_idx"]   = f_idx  + 1
+        sd["archer_session_idx"]    = a_idx  + 1
+        sd["fire_mage_session_idx"] = fm_idx + 1
+        sd["ice_mage_session_idx"]  = im_idx + 1
         self.game_manager.save_game()
 
         # Save brain checkpoints + session buffer snapshots asynchronously.
@@ -1204,9 +1468,11 @@ class BattleScene(BaseScene):
         if name:
             import threading
             self._session_saving = True
-            fa = self.fighter_agent
-            aa = self.archer_agent
-            gm = self.game_manager
+            fa  = self.fighter_agent
+            aa  = self.archer_agent
+            fma = self.fire_mage_agent
+            ima = self.ice_mage_agent
+            gm  = self.game_manager
 
             def _do_session_save():
                 try:
@@ -1214,6 +1480,12 @@ class BattleScene(BaseScene):
                     aa.save_checkpoint(gm.brain_path(name, "archer"))
                     fa.save_buffer_session(gm.buffer_folder(name, "fighter"), f_idx)
                     aa.save_buffer_session(gm.buffer_folder(name, "archer"),  a_idx)
+                    if fma:
+                        fma.save_checkpoint(gm.brain_path(name, "fire_mage"))
+                        fma.save_buffer_session(gm.buffer_folder(name, "fire_mage"), fm_idx)
+                    if ima:
+                        ima.save_checkpoint(gm.brain_path(name, "ice_mage"))
+                        ima.save_buffer_session(gm.buffer_folder(name, "ice_mage"), im_idx)
                 finally:
                     self._session_saving = False
 

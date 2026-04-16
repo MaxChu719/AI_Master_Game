@@ -45,6 +45,8 @@ N_FRAMES   = int(_IOBS["n_frames"])     # 4
 _RCFG         = CFG["rewards"]
 _RFIGHTER     = _RCFG["fighter"]
 _RARCHER      = _RCFG["archer"]
+_RFIRE_MAGE   = _RCFG.get("fire_mage", {})
+_RICE_MAGE    = _RCFG.get("ice_mage",  {})
 
 # Gray values for each entity type in the rendered obs frame [0, 1]
 _GRAY_FIGHTER  = 0.40   # ally fighter
@@ -244,7 +246,7 @@ class MinionEnv:
                 elif dist > _RFIGHTER["far_range"]:
                     reward -= _RFIGHTER["far_penalty"]
 
-        else:  # archer
+        elif self.role == "archer":
             reward += combat_events.get("archer_damage_dealt", 0.0) * _RCFG["archer_damage_scale"]
             reward -= combat_events.get("archer_damage_taken", 0.0) * _RCFG["archer_damage_taken_scale"]
             reward += combat_events.get("archer_kills",        0)   * _RARCHER["ranged_kill_bonus"]
@@ -260,6 +262,37 @@ class MinionEnv:
                     reward += _RARCHER["ideal_range_bonus"]
                 elif dist < _RARCHER["too_close_range"] or dist > _RARCHER["too_far_range"]:
                     reward -= _RARCHER["bad_range_penalty"]
+
+        elif self.role == "fire_mage":
+            reward += combat_events.get("fire_mage_damage", 0.0) * float(_RFIRE_MAGE.get("damage_scale", 1.0))
+            reward -= combat_events.get("mage_damage_taken", 0.0) * float(_RFIRE_MAGE.get("damage_taken_scale", 1.0))
+            reward += combat_events.get("fire_mage_kills",  0)   * float(_RFIRE_MAGE.get("kill_bonus", 5.0))
+
+            dist = self._nearest_enemy_dist()
+            if dist is not None:
+                pref   = float(_RFIRE_MAGE.get("preferred_range", 210.0))
+                margin = float(_RFIRE_MAGE.get("preferred_margin", 60.0))
+                min_sf = float(_RFIRE_MAGE.get("min_safe_dist", 80.0))
+                if abs(dist - pref) <= margin:
+                    reward += float(_RFIRE_MAGE.get("range_bonus", 0.02))
+                elif dist < min_sf:
+                    reward -= float(_RFIRE_MAGE.get("too_close_penalty", 0.01))
+
+        elif self.role == "ice_mage":
+            reward += combat_events.get("ice_mage_damage",  0.0) * float(_RICE_MAGE.get("damage_scale", 1.0))
+            reward -= combat_events.get("mage_damage_taken", 0.0) * float(_RICE_MAGE.get("damage_taken_scale", 1.0))
+            reward += combat_events.get("ice_mage_kills",   0)   * float(_RICE_MAGE.get("kill_bonus", 5.0))
+            reward += combat_events.get("ice_mage_freezes", 0)   * float(_RICE_MAGE.get("freeze_bonus", 2.0))
+
+            dist = self._nearest_enemy_dist()
+            if dist is not None:
+                pref   = float(_RICE_MAGE.get("preferred_range", 200.0))
+                margin = float(_RICE_MAGE.get("preferred_margin", 60.0))
+                min_sf = float(_RICE_MAGE.get("min_safe_dist", 80.0))
+                if abs(dist - pref) <= margin:
+                    reward += float(_RICE_MAGE.get("range_bonus", 0.02))
+                elif dist < min_sf:
+                    reward -= float(_RICE_MAGE.get("too_close_penalty", 0.01))
 
         if not self.minion.is_alive:
             reward -= _RCFG["death_penalty"]

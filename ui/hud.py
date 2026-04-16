@@ -135,99 +135,92 @@ class HUD:
 
     # ── AI / DQN panel ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _agent_mode_loss(agent, steps, loss_val, buf) -> tuple[str, str]:
+        """Return (mode_str, loss_str) for an agent."""
+        preset_only = agent.preset_only if agent else False
+        min_buf     = agent.min_buffer_size if agent else 200
+        if preset_only:
+            if steps > 0:
+                return "Preset+Train", f"{loss_val:.4f}"
+            elif buf > 0:
+                return "Preset+Warmup", f"{buf}/{min_buf}"
+            else:
+                return "Preset+Train", "N/A"
+        else:
+            if steps > 0:
+                return "DQN", f"{loss_val:.4f}"
+            elif buf > 0:
+                return "Warmup", f"{buf}/{min_buf}"
+            else:
+                return "DQN", "N/A"
+
     def _draw_ai_panel(self, surface, sh):
-        fa = self.scene.fighter_agent
-        aa = self.scene.archer_agent
+        fa  = self.scene.fighter_agent
+        aa  = self.scene.archer_agent
+        fma = getattr(self.scene, "fire_mage_agent", None)
+        ima = getattr(self.scene, "ice_mage_agent",  None)
 
-        # ── Fighter stats ──────────────────────────────────────────────────
-        f_steps = self.scene.latest_steps
-        f_buf   = getattr(self.scene, "latest_buffer_size", 0)
-        f_preset_only = fa.preset_only if fa else False
+        # ── Per-agent stats ────────────────────────────────────────────────
+        f_steps  = self.scene.latest_steps
+        f_buf    = getattr(self.scene, "latest_buffer_size",        0)
+        f_loss   = getattr(self.scene, "latest_loss",               0.0)
         f_buf_max = fa.buffer_size if fa else 1
+        f_mode_str, f_loss_str = self._agent_mode_loss(fa, f_steps, f_loss, f_buf)
 
-        if f_preset_only:
-            if f_steps > 0:
-                f_mode_str = "Preset+Train"
-                f_loss_str = f"{self.scene.latest_loss:.4f}"
-            elif f_buf > 0:
-                min_buf = fa.min_buffer_size if fa else 200
-                f_mode_str = "Preset+Warmup"
-                f_loss_str = f"{f_buf}/{min_buf}"
-            else:
-                f_mode_str = "Preset+Train"
-                f_loss_str = "N/A"
-        elif f_steps > 0:
-            f_mode_str = "DQN"
-            f_loss_str = f"{self.scene.latest_loss:.4f}"
-        elif f_buf > 0:
-            min_buf = fa.min_buffer_size if fa else 200
-            f_mode_str = "Warmup"
-            f_loss_str = f"{f_buf}/{min_buf}"
-        else:
-            f_mode_str = "DQN"
-            f_loss_str = "N/A"
-
-        f_buf_pct  = int(100 * f_buf / max(1, f_buf_max))
-        f_lr_str   = f"{fa.lr:.4f}" if fa else "—"
-        f_beta_str = f"{fa.per_beta:.2f}" if fa else "—"
-
-        # ── Archer stats ───────────────────────────────────────────────────
-        a_steps = getattr(self.scene, "latest_archer_steps", 0)
-        a_buf   = getattr(self.scene, "latest_archer_buffer_size", 0)
-        a_preset_only = aa.preset_only if aa else False
+        a_steps  = getattr(self.scene, "latest_archer_steps",       0)
+        a_buf    = getattr(self.scene, "latest_archer_buffer_size",  0)
+        a_loss   = getattr(self.scene, "latest_archer_loss",         0.0)
         a_buf_max = aa.buffer_size if aa else 1
+        a_mode_str, a_loss_str = self._agent_mode_loss(aa, a_steps, a_loss, a_buf)
 
-        if a_preset_only:
-            if a_steps > 0:
-                a_mode_str = "Preset+Train"
-                a_loss_str = f"{self.scene.latest_archer_loss:.4f}"
-            elif a_buf > 0:
-                min_buf = aa.min_buffer_size if aa else 200
-                a_mode_str = "Preset+Warmup"
-                a_loss_str = f"{a_buf}/{min_buf}"
-            else:
-                a_mode_str = "Preset+Train"
-                a_loss_str = "N/A"
-        elif a_steps > 0:
-            a_mode_str = "DQN"
-            a_loss_str = f"{self.scene.latest_archer_loss:.4f}"
-        elif a_buf > 0:
-            min_buf = aa.min_buffer_size if aa else 200
-            a_mode_str = "Warmup"
-            a_loss_str = f"{a_buf}/{min_buf}"
-        else:
-            a_mode_str = "DQN"
-            a_loss_str = "N/A"
+        fm_steps = getattr(self.scene, "latest_fm_steps",           0)
+        fm_buf   = getattr(self.scene, "latest_fm_buffer_size",      0)
+        fm_loss  = getattr(self.scene, "latest_fm_loss",             0.0)
+        fm_buf_max = fma.buffer_size if fma else 1
+        fm_mode_str, fm_loss_str = self._agent_mode_loss(fma, fm_steps, fm_loss, fm_buf)
 
-        a_buf_pct  = int(100 * a_buf / max(1, a_buf_max))
-        a_lr_str   = f"{aa.lr:.4f}" if aa else "—"
-        a_beta_str = f"{aa.per_beta:.2f}" if aa else "—"
+        im_steps = getattr(self.scene, "latest_im_steps",           0)
+        im_buf   = getattr(self.scene, "latest_im_buffer_size",      0)
+        im_loss  = getattr(self.scene, "latest_im_loss",             0.0)
+        im_buf_max = ima.buffer_size if ima else 1
+        im_mode_str, im_loss_str = self._agent_mode_loss(ima, im_steps, im_loss, im_buf)
 
-        f_avg_rew = getattr(self.scene, "latest_avg_reward", 0.0)
-        a_avg_rew = getattr(self.scene, "latest_archer_avg_reward", 0.0)
-        speed = self.scene.speed_multiplier
+        f_avg_rew  = getattr(self.scene, "latest_avg_reward",           0.0)
+        a_avg_rew  = getattr(self.scene, "latest_archer_avg_reward",    0.0)
+        fm_avg_rew = getattr(self.scene, "latest_fm_avg_reward",        0.0)
+        im_avg_rew = getattr(self.scene, "latest_im_avg_reward",        0.0)
+        speed      = self.scene.speed_multiplier
 
-        # Mode colours
-        f_mode_col = (120, 200, 120) if f_preset_only else (160, 200, 255)
-        a_mode_col = (120, 200, 120) if a_preset_only else (100, 220, 120)
+        f_buf_pct  = int(100 * f_buf  / max(1, f_buf_max))
+        a_buf_pct  = int(100 * a_buf  / max(1, a_buf_max))
+        fm_buf_pct = int(100 * fm_buf / max(1, fm_buf_max))
+        im_buf_pct = int(100 * im_buf / max(1, im_buf_max))
+
+        f_mode_col  = (120, 200, 120) if (fa  and fa.preset_only)  else (160, 200, 255)
+        a_mode_col  = (120, 200, 120) if (aa  and aa.preset_only)  else (100, 220, 120)
+        fm_mode_col = (120, 200, 120) if (fma and fma.preset_only) else (255, 160, 80)
+        im_mode_col = (120, 200, 120) if (ima and ima.preset_only) else (80,  180, 255)
 
         lines = [
-            (f"Fighter Brain [{f_mode_str}]",           self.font_ai_hdr, f_mode_col),
-            (f"Loss: {f_loss_str}   Steps: {f_steps}",  self.font_ai, (180, 180, 180)),
-            (f"Avg Rew: {f_avg_rew:.3f}",               self.font_ai, (160, 210, 160)),
-            (f"Buf: {f_buf}/{f_buf_max} ({f_buf_pct}%)", self.font_ai, (160, 160, 160)),
-            (f"LR: {f_lr_str}   β: {f_beta_str}",       self.font_ai, (160, 160, 160)),
-            (f"Archer Brain [{a_mode_str}]",             self.font_ai_hdr, a_mode_col),
-            (f"Loss: {a_loss_str}   Steps: {a_steps}",  self.font_ai, (180, 180, 180)),
-            (f"Avg Rew: {a_avg_rew:.3f}",               self.font_ai, (160, 210, 160)),
-            (f"Buf: {a_buf}/{a_buf_max} ({a_buf_pct}%)", self.font_ai, (160, 160, 160)),
-            (f"LR: {a_lr_str}   β: {a_beta_str}",       self.font_ai, (160, 160, 160)),
-            (f"Speed: {speed}x",                         self.font_ai, (180, 180, 180)),
+            (f"Fighter Brain [{f_mode_str}]",             self.font_ai_hdr, f_mode_col),
+            (f"Loss:{f_loss_str} Steps:{f_steps}",        self.font_ai, (180, 180, 180)),
+            (f"Rew:{f_avg_rew:.3f} Buf:{f_buf_pct}%",    self.font_ai, (160, 160, 160)),
+            (f"Archer Brain [{a_mode_str}]",               self.font_ai_hdr, a_mode_col),
+            (f"Loss:{a_loss_str} Steps:{a_steps}",        self.font_ai, (180, 180, 180)),
+            (f"Rew:{a_avg_rew:.3f} Buf:{a_buf_pct}%",    self.font_ai, (160, 160, 160)),
+            (f"FireMage Brain [{fm_mode_str}]",            self.font_ai_hdr, fm_mode_col),
+            (f"Loss:{fm_loss_str} Steps:{fm_steps}",      self.font_ai, (180, 180, 180)),
+            (f"Rew:{fm_avg_rew:.3f} Buf:{fm_buf_pct}%",  self.font_ai, (160, 160, 160)),
+            (f"IceMage Brain [{im_mode_str}]",             self.font_ai_hdr, im_mode_col),
+            (f"Loss:{im_loss_str} Steps:{im_steps}",      self.font_ai, (180, 180, 180)),
+            (f"Rew:{im_avg_rew:.3f} Buf:{im_buf_pct}%",  self.font_ai, (160, 160, 160)),
+            (f"Speed: {speed}x",                           self.font_ai, (180, 180, 180)),
         ]
         if getattr(self.scene, "_saving", False):
             lines.append(("Saving...", self.font_ai, (255, 200, 60)))
-        line_h  = 21
-        panel_w = 270
+        line_h  = 19
+        panel_w = 260
         panel_h = len(lines) * line_h + 10
         panel_x = 10
         panel_y = sh - panel_h - 10

@@ -2,9 +2,10 @@
 Research Lab — meta-upgrade screen between battles.
 
 Tabs:
-  Fighter / Archer  — spend Coins to raise HP, Attack, Speed, Atk Speed, Stamina.
-  AI Master         — upgrade MP, spells, deployment limit, replay buffer;
-                      trigger memory replay training.
+  AI Minions — spend Coins to raise HP, Attack, Speed, Atk Speed, Stamina/Shoot CD
+               for all four minion types (Fighter, Archer, Fire Mage, Ice Mage).
+  AI Master  — upgrade MP, spells, deployment limit, replay buffer;
+               trigger memory replay training (all 4 agents).
 """
 import threading
 import pygame
@@ -14,6 +15,7 @@ from config import CFG
 UPGRADE_COSTS = [50, 100, 150, 200, 250]
 MAX_LEVEL     = 5
 
+# Fighter / Archer: 5 stats (includes Stamina)
 STATS = [
     ("HP",          "hp"),
     ("Attack",      "attack"),
@@ -22,9 +24,17 @@ STATS = [
     ("Stamina",     "stamina"),
 ]
 
-_MINIONS       = ["fighter", "archer"]
-_MINION_LABELS = ["Fighter", "Archer"]
-_MINION_COLORS = [(100, 160, 255), (100, 255, 140)]
+# Fire Mage / Ice Mage: 4 stats (no Stamina; Atk Speed = Shoot CD)
+MAGE_STATS = [
+    ("HP",          "hp"),
+    ("Attack",      "attack"),
+    ("Move Speed",  "move_speed"),
+    ("Shoot CD",    "attack_speed"),
+]
+
+_MINIONS       = ["fighter", "archer", "fire_mage", "ice_mage"]
+_MINION_LABELS = ["Fighter", "Archer", "Fire Mage", "Ice Mage"]
+_MINION_COLORS = [(100, 160, 255), (100, 255, 140), (255, 120, 40), (80, 180, 255)]
 
 _STAT_EFFECTS = [
     "+20 max HP per level",
@@ -33,6 +43,18 @@ _STAT_EFFECTS = [
     "-0.05 s attack cooldown per level",
     "+20 max stamina per level",
 ]
+_MAGE_STAT_EFFECTS = [
+    "+20 max HP per level",
+    "+5 attack damage per level",
+    "+20 move speed per level",
+    "-0.05 s shoot cooldown per level",
+]
+
+
+def _col_stats(col: int):
+    """Return the stat list for the given column index."""
+    return STATS if col < 2 else MAGE_STATS
+
 
 _AIM = CFG["ai_master_upgrades"]
 _MR  = CFG["memory_replay"]
@@ -50,25 +72,24 @@ _AI_MASTER_ROWS = [
     ("Deploy Limit",    "deployment",    _AIM["deployment_costs"],    5, "+global cap (2→5→8→12→16→20)"),
 ]
 
-_ROW_START_Y = 148
-_ROW_H       = 58
+_ROW_H = 52
 
 
 class ResearchLabScene(BaseScene):
     def __init__(self, game_manager):
         super().__init__(game_manager)
         self._font_title  = pygame.font.SysFont("arial", 44, bold=True)
-        self._font_header = pygame.font.SysFont("arial", 28, bold=True)
-        self._font_stat   = pygame.font.SysFont("arial", 22)
-        self._font_small  = pygame.font.SysFont("arial", 17)
-        self._font_stats  = pygame.font.SysFont("arial", 14)
+        self._font_header = pygame.font.SysFont("arial", 24, bold=True)
+        self._font_stat   = pygame.font.SysFont("arial", 20)
+        self._font_small  = pygame.font.SysFont("arial", 15)
+        self._font_stats  = pygame.font.SysFont("arial", 13)
         self._font_btn    = pygame.font.SysFont("arial", 26, bold=True)
         self._font_tab    = pygame.font.SysFont("arial", 20, bold=True)
 
         # Active tab: 0 = AI Minions, 1 = AI Master
         self._tab    = 0
-        self._col    = 0   # used for fighter/archer tabs
-        self._row    = 0   # selected row
+        self._col    = 0   # 0=fighter,1=archer,2=fire_mage,3=ice_mage
+        self._row    = 0   # selected row within current column
         self._aim_row = 0  # selected row in AI Master tab
 
         self._msg       = ""
@@ -79,9 +100,9 @@ class ResearchLabScene(BaseScene):
         # Memory replay training
         self._replay_iters        = 100
         self._replay_running      = False
-        self._replay_result_lines = []   # list of strings shown after training completes
+        self._replay_result_lines = []
         self._replay_saving       = False
-        self._replay_progress     = 0.0  # 0.0–1.0, updated live from the training thread
+        self._replay_progress     = 0.0
         self._replay_thread : threading.Thread | None = None
 
     # ── Accessors ─────────────────────────────────────────────────────────
@@ -96,14 +117,21 @@ class ResearchLabScene(BaseScene):
         return self.game_manager.save_data.get("stats", {})
 
     def _level(self, col: int, row: int) -> int:
-        return self._research()[_MINIONS[col]].get(STATS[row][1], 0)
+        stats = _col_stats(col)
+        return self._research()[_MINIONS[col]].get(stats[row][1], 0)
 
     def _set_level(self, col: int, row: int, val: int):
-        self._research()[_MINIONS[col]][STATS[row][1]] = val
+        stats = _col_stats(col)
+        self._research()[_MINIONS[col]][stats[row][1]] = val
 
     def _aim_level(self, row: int) -> int:
         _, key, _, _, _ = _AI_MASTER_ROWS[row]
         return self._ai_master().get(key, 0)
+
+    def _clamp_row(self):
+        """Clamp _row to valid range for the current column."""
+        max_r = len(_col_stats(self._col)) - 1
+        self._row = min(self._row, max_r)
 
     # ── Events ────────────────────────────────────────────────────────────
 
@@ -128,12 +156,17 @@ class ResearchLabScene(BaseScene):
             elif key == pygame.K_b:
                 self._start_battle()
         else:
+            n_rows = len(_col_stats(self._col))
             if key == pygame.K_UP:
-                self._row = (self._row - 1) % len(STATS)
+                self._row = (self._row - 1) % n_rows
             elif key == pygame.K_DOWN:
-                self._row = (self._row + 1) % len(STATS)
-            elif key in (pygame.K_LEFT, pygame.K_RIGHT):
-                self._col = 1 - self._col
+                self._row = (self._row + 1) % n_rows
+            elif key == pygame.K_LEFT:
+                self._col = (self._col - 1) % len(_MINIONS)
+                self._clamp_row()
+            elif key == pygame.K_RIGHT:
+                self._col = (self._col + 1) % len(_MINIONS)
+                self._clamp_row()
             elif key in (pygame.K_RETURN, pygame.K_SPACE):
                 self._try_upgrade()
             elif key == pygame.K_b:
@@ -155,6 +188,7 @@ class ResearchLabScene(BaseScene):
                     self._col, self._row = col, row
             elif kind == "header":
                 self._col = info[2]
+                self._clamp_row()
             elif kind == "aim_stat":
                 row = info[2]
                 if row == self._aim_row:
@@ -186,7 +220,8 @@ class ResearchLabScene(BaseScene):
         self.game_manager.coins -= cost
         self._set_level(self._col, self._row, level + 1)
         self.game_manager.save_game()
-        self._flash(f"{_MINION_LABELS[self._col]} {STATS[self._row][0]} → Lv.{level + 1}!")
+        stat_name = _col_stats(self._col)[self._row][0]
+        self._flash(f"{_MINION_LABELS[self._col]} {stat_name} → Lv.{level + 1}!")
 
     def _try_aim_upgrade(self, row: int):
         label, key, costs, max_lvl, _ = _AI_MASTER_ROWS[row]
@@ -223,13 +258,20 @@ class ResearchLabScene(BaseScene):
         cost = self._replay_cost()
         fa   = self.game_manager.fighter_agent
         aa   = self.game_manager.archer_agent
+        fma  = self.game_manager.fire_mage_agent
+        ima  = self.game_manager.ice_mage_agent
         if fa is None or aa is None:
             self._flash("No agents loaded — start a game first.")
             return
         if self.game_manager.coins < cost:
             self._flash(f"Need {cost} coins  (have {self.game_manager.coins})")
             return
-        if fa.tree.size < fa.min_buffer_size and aa.tree.size < aa.min_buffer_size:
+        # Allow training if at least one agent has enough buffer
+        any_ready = (fa.tree.size >= fa.min_buffer_size or
+                     aa.tree.size >= aa.min_buffer_size or
+                     (fma is not None and fma.tree.size >= fma.min_buffer_size) or
+                     (ima is not None and ima.tree.size >= ima.min_buffer_size))
+        if not any_ready:
             self._flash("Buffer too small — play a battle first to collect data.")
             return
         self.game_manager.coins -= cost
@@ -243,24 +285,27 @@ class ResearchLabScene(BaseScene):
         gm = self.game_manager
 
         def _train():
-            total_f_loss, total_a_loss = 0.0, 0.0
-            total_f_rew,  total_a_rew  = 0.0, 0.0
+            total_f_loss  = total_a_loss  = 0.0
+            total_fm_loss = total_im_loss = 0.0
+            total_f_rew   = total_a_rew   = 0.0
+            total_fm_rew  = total_im_rew  = 0.0
             steps = 0
             for i in range(n):
-                rf = fa.train_step()
-                ra = aa.train_step()
-                if rf.get("steps", 0) > 0:
-                    total_f_loss += rf["loss"]
-                    total_f_rew  += rf.get("avg_reward", 0.0)
-                    steps        += 1
-                if ra.get("steps", 0) > 0:
-                    total_a_loss += ra["loss"]
-                    total_a_rew  += ra.get("avg_reward", 0.0)
+                rf  = fa.train_step()
+                ra  = aa.train_step()
+                rfm = fma.train_step() if fma else {}
+                rim = ima.train_step() if ima else {}
+                if rf.get("steps",  0) > 0:
+                    total_f_loss  += rf["loss"];  total_f_rew  += rf.get("avg_reward",  0.0)
+                if ra.get("steps",  0) > 0:
+                    total_a_loss  += ra["loss"];  total_a_rew  += ra.get("avg_reward",  0.0)
+                if rfm.get("steps", 0) > 0:
+                    total_fm_loss += rfm["loss"]; total_fm_rew += rfm.get("avg_reward", 0.0)
+                if rim.get("steps", 0) > 0:
+                    total_im_loss += rim["loss"]; total_im_rew += rim.get("avg_reward", 0.0)
+                steps += 1
                 self._replay_progress = (i + 1) / n
-            avg_f_loss = total_f_loss / max(1, steps)
-            avg_a_loss = total_a_loss / max(1, steps)
-            avg_f_rew  = total_f_rew  / max(1, steps)
-            avg_a_rew  = total_a_rew  / max(1, steps)
+            d = max(1, steps)
             self._replay_running = False
 
             # Save model checkpoints only (buffer saved at session end)
@@ -270,12 +315,18 @@ class ResearchLabScene(BaseScene):
                 try:
                     fa.save_checkpoint(gm.brain_path(name, "fighter"))
                     aa.save_checkpoint(gm.brain_path(name, "archer"))
+                    if fma:
+                        fma.save_checkpoint(gm.brain_path(name, "fire_mage"))
+                    if ima:
+                        ima.save_checkpoint(gm.brain_path(name, "ice_mage"))
                 finally:
                     self._replay_saving = False
 
             self._replay_result_lines = [
-                f"F  loss:{avg_f_loss:.4f}  avg rew:{avg_f_rew:.3f}",
-                f"A  loss:{avg_a_loss:.4f}  avg rew:{avg_a_rew:.3f}",
+                f"F  loss:{total_f_loss/d:.4f}  rew:{total_f_rew/d:.3f}",
+                f"A  loss:{total_a_loss/d:.4f}  rew:{total_a_rew/d:.3f}",
+                f"FM loss:{total_fm_loss/d:.4f}  rew:{total_fm_rew/d:.3f}",
+                f"IM loss:{total_im_loss/d:.4f}  rew:{total_im_rew/d:.3f}",
             ]
 
         self._replay_thread = threading.Thread(target=_train, daemon=True)
@@ -341,33 +392,40 @@ class ResearchLabScene(BaseScene):
 
         # ── Controls hint ──────────────────────────────────────────────────
         ctrl = self._font_stats.render(
-            "Tab  Switch tab     Up/Down  Select     Enter/Click  Upgrade     [B] Battle     ESC  Back",
+            "Tab  Switch tab     Up/Down  Select row     Left/Right  Switch minion"
+            "     Enter/Click  Upgrade     [B] Battle     ESC  Back",
             True, (60, 60, 90))
         surface.blit(ctrl, ctrl.get_rect(center=(cx, sh - 16)))
 
-    # ── Fighter / Archer tab ──────────────────────────────────────────────
+    # ── AI Minions tab ────────────────────────────────────────────────────
 
     def _draw_minion_tab(self, surface, sw, sh, cx, top_y):
-        col_xs     = [sw // 4, 3 * sw // 4]
-        rows_bottom = top_y + len(STATS) * _ROW_H
+        # 4 columns, evenly spaced across the screen
+        n_cols = len(_MINIONS)
+        col_xs = [sw * (i + 1) // (n_cols + 1) for i in range(n_cols)]
 
-        for ci in range(2):
+        max_rows = max(len(STATS), len(MAGE_STATS))
+        rows_bottom = top_y + 32 + max_rows * _ROW_H
+
+        for ci in range(n_cols):
             self._draw_minion_column(surface, ci, col_xs[ci], top_y)
 
-        stats_top = rows_bottom + 12
+        stats_top = rows_bottom + 10
         pygame.draw.line(surface, (40, 40, 68), (60, stats_top), (sw - 60, stats_top), 1)
         hdr = self._font_stats.render("— Battle Statistics —", True, (120, 130, 160))
         surface.blit(hdr, hdr.get_rect(center=(cx, stats_top + 10)))
-        for ci in range(2):
+        for ci in range(n_cols):
             self._draw_stats_column(surface, ci, col_xs[ci], stats_top + 22)
 
-        effect_y = stats_top + 22 + 5 * 17 + 10
+        # Effect hint for selected row
+        cur_effects = _MAGE_STAT_EFFECTS if self._col >= 2 else _STAT_EFFECTS
+        effect_y = stats_top + 22 + 5 * 15 + 8
         eff_surf = self._font_small.render(
-            f"Effect: {_STAT_EFFECTS[self._row]}", True, (140, 160, 200))
+            f"Effect: {cur_effects[self._row]}", True, (140, 160, 200))
         surface.blit(eff_surf, eff_surf.get_rect(center=(cx, effect_y)))
 
-        btn_top  = effect_y + 26
-        btn_rect = pygame.Rect(cx - 150, btn_top, 300, 48)
+        btn_top  = effect_y + 22
+        btn_rect = pygame.Rect(cx - 150, btn_top, 300, 44)
         pygame.draw.rect(surface, (25, 70, 30), btn_rect, border_radius=8)
         pygame.draw.rect(surface, (60, 180, 70), btn_rect, 2, border_radius=8)
         btn_t = self._font_btn.render("[B] Start Battle", True, (140, 255, 150))
@@ -375,20 +433,22 @@ class ResearchLabScene(BaseScene):
         self._click_rects.append((btn_rect, "battle"))
 
     def _draw_minion_column(self, surface, ci, col_x, top_y):
-        lc   = _MINION_COLORS[ci]
-        hdr  = self._font_header.render(_MINION_LABELS[ci], True, lc)
-        hdr_r = hdr.get_rect(center=(col_x, top_y - 22 + _ROW_START_Y - 148))
-        # Adjust to content_top
-        hdr_r.centery = top_y + 14
+        """Draw one minion upgrade column (narrower for 4-column layout)."""
+        lc      = _MINION_COLORS[ci]
+        stats   = _col_stats(ci)
+        half_w  = (surface.get_width() // (len(_MINIONS) + 1)) // 2 - 4
+
+        hdr = self._font_header.render(_MINION_LABELS[ci], True, lc)
+        hdr_r = hdr.get_rect(center=(col_x, top_y + 14))
         surface.blit(hdr, hdr_r)
         self._click_rects.append((hdr_r.inflate(20, 8), "header", ci))
 
-        for ri, (sl, _) in enumerate(STATS):
+        for ri, (sl, _) in enumerate(stats):
             level = self._level(ci, ri)
-            sel   = (ci == self._col and ri == self._row and self._tab == ci)
+            sel   = (ci == self._col and ri == self._row and self._tab == 0)
             ry    = top_y + 32 + ri * _ROW_H
 
-            row_rect = pygame.Rect(col_x - 230, ry - 4, 460, _ROW_H - 4)
+            row_rect = pygame.Rect(col_x - half_w, ry - 4, half_w * 2, _ROW_H - 4)
             self._click_rects.append((row_rect, "stat", ci, ri))
 
             if sel:
@@ -397,24 +457,25 @@ class ResearchLabScene(BaseScene):
 
             sc = (255, 255, 255) if sel else (170, 170, 190)
             ss = self._font_stat.render(sl, True, sc)
-            surface.blit(ss, ss.get_rect(midleft=(col_x - 220, ry + _ROW_H // 2 - 8)))
+            surface.blit(ss, ss.get_rect(midleft=(col_x - half_w + 6, ry + _ROW_H // 2 - 8)))
 
+            # Pip dots (below label)
+            pip_y = ry + _ROW_H // 2 + 6
             for p in range(MAX_LEVEL):
-                px      = col_x - 20 + p * 26
-                py      = ry + _ROW_H // 2 - 8
-                pc      = (60, 200, 90) if p < level else (40, 42, 58)
-                pygame.draw.rect(surface, pc, (px, py, 20, 20), border_radius=4)
+                px = col_x - half_w + 6 + p * 20
+                pc = (60, 200, 90) if p < level else (40, 42, 58)
+                pygame.draw.rect(surface, pc, (px, pip_y, 17, 13), border_radius=3)
                 if p < level:
-                    pygame.draw.rect(surface, (90, 230, 110), (px, py, 20, 20), 1, border_radius=4)
+                    pygame.draw.rect(surface, (90, 230, 110), (px, pip_y, 17, 13), 1, border_radius=3)
 
             if level < MAX_LEVEL:
                 cost = UPGRADE_COSTS[level]
                 ca   = self.game_manager.coins >= cost
                 cc   = (255, 220, 60) if (sel and ca) else (180, 140, 40) if ca else (160, 80, 80)
-                cs   = self._font_small.render(f"{cost} coins", True, cc)
+                cs   = self._font_small.render(f"{cost}¢", True, cc)
             else:
                 cs = self._font_small.render("MAX", True, (80, 200, 90))
-            surface.blit(cs, cs.get_rect(midright=(col_x + 220, ry + _ROW_H // 2 - 8)))
+            surface.blit(cs, cs.get_rect(midright=(col_x + half_w - 4, ry + _ROW_H // 2 - 8)))
 
     def _draw_stats_column(self, surface, ci, col_x, top_y):
         mk  = _MINIONS[ci]
@@ -425,10 +486,10 @@ class ResearchLabScene(BaseScene):
                 f"Kills: {s.get('total_kills', 0):,}",
                 f"Damage: {s.get('total_damage', 0):,}",
                 f"Max Waves: {s.get('max_waves_survived', 0)}",
-                f"Training Waves: {s.get('training_waves', 0)}",
+                f"Train Waves: {s.get('training_waves', 0)}",
                 f"Swing Acc: {s.get('attacks_hit', 0) / max(1, s.get('attacks_attempted', 1)) * 100:.1f}%",
             ]
-        else:
+        elif mk == "archer":
             f = s.get("shots_fired", 0)
             rows = [
                 f"Kills: {s.get('total_kills', 0):,}",
@@ -437,27 +498,39 @@ class ResearchLabScene(BaseScene):
                 f"Shots Fired: {f:,}",
                 f"Shot Acc: {s.get('shots_hit', 0) / max(1, f) * 100:.1f}%",
             ]
+        elif mk == "fire_mage":
+            rows = [
+                f"Kills: {s.get('total_kills', 0):,}",
+                f"Damage: {s.get('total_damage', 0):,}",
+                f"DQN Role: FM",
+            ]
+        else:  # ice_mage
+            rows = [
+                f"Kills: {s.get('total_kills', 0):,}",
+                f"Damage: {s.get('total_damage', 0):,}",
+                f"DQN Role: IM",
+            ]
         for i, text in enumerate(rows):
             surf = self._font_stats.render(text, True, col)
-            surface.blit(surf, surf.get_rect(midleft=(col_x - 120, top_y + i * 17 + 8)))
+            surface.blit(surf, surf.get_rect(midleft=(col_x - 80, top_y + i * 15 + 6)))
 
     # ── AI Master tab ─────────────────────────────────────────────────────
 
     def _draw_ai_master_tab(self, surface, sw, sh, cx, top_y):
-        surface.blit(self._font_header.render("AI Master Upgrades", True, (200, 130, 255)),
-                     pygame.Rect(0, 0, sw, 30).move(0, top_y).inflate(-2, 0)
-                     .move(cx - self._font_header.size("AI Master Upgrades")[0] // 2 - sw // 2 + cx // 2, 0))
+        fa  = self.game_manager.fighter_agent
+        aa  = self.game_manager.archer_agent
+        fma = self.game_manager.fire_mage_agent
+        ima = self.game_manager.ice_mage_agent
 
-        row_h = 25
-        col_w = sw // 2 - 30
+        f_buf  = fa.tree.size  if fa  else 0
+        a_buf  = aa.tree.size  if aa  else 0
+        fm_buf = fma.tree.size if fma else 0
+        im_buf = ima.tree.size if ima else 0
+
+        row_h  = 25
+        col_w  = sw // 2 - 30
         n_rows = len(_AI_MASTER_ROWS)
 
-        fa = self.game_manager.fighter_agent
-        aa = self.game_manager.archer_agent
-        f_buf = fa.tree.size if fa else 0
-        a_buf = aa.tree.size if aa else 0
-
-        # Header
         hdr = self._font_header.render("AI Master Upgrades", True, (200, 130, 255))
         surface.blit(hdr, hdr.get_rect(center=(cx, top_y + 16)))
 
@@ -479,7 +552,6 @@ class ResearchLabScene(BaseScene):
             ts = self._font_stat.render(label, True, tc)
             surface.blit(ts, ts.get_rect(midleft=(row_rect.x + 10, ry + row_h // 2 - 2)))
 
-            # Pip dots
             for p in range(max_lvl):
                 px = cx + 10 + p * 22
                 py = ry + row_h // 2 - 8
@@ -497,7 +569,6 @@ class ResearchLabScene(BaseScene):
                 cs = self._font_small.render("MAX", True, (80, 200, 90))
             surface.blit(cs, cs.get_rect(midright=(row_rect.right - 10, ry + row_h // 2 - 2)))
 
-            # Effect hint (only for selected row)
             if sel:
                 es = self._font_stats.render(f"  {effect}", True, (160, 140, 200))
                 surface.blit(es, (row_rect.x + ts.get_width() + 16, ry + row_h // 2 + 6))
@@ -509,19 +580,19 @@ class ResearchLabScene(BaseScene):
         mr_title = self._font_header.render("Memory Replay Training", True, (200, 160, 255))
         surface.blit(mr_title, mr_title.get_rect(center=(cx, mr_top + 20)))
 
-        # Buffer status
+        # Buffer status — all 4 agents
         bs_text = self._font_small.render(
-            f"Fighter buffer: {f_buf:,}   Archer buffer: {a_buf:,}", True, (150, 140, 170))
-        surface.blit(bs_text, bs_text.get_rect(center=(cx, mr_top + 48)))
+            f"F:{f_buf:,}  A:{a_buf:,}  FM:{fm_buf:,}  IM:{im_buf:,}",
+            True, (150, 140, 170))
+        surface.blit(bs_text, bs_text.get_rect(center=(cx, mr_top + 44)))
 
-        # Iterations selector
         cost_total = self._replay_cost()
         iter_text  = self._font_stat.render(
             f"Iterations: {self._replay_iters:,}   Cost: {cost_total:,} coins",
             True, (220, 200, 255))
-        surface.blit(iter_text, iter_text.get_rect(center=(cx, mr_top + 76)))
+        surface.blit(iter_text, iter_text.get_rect(center=(cx, mr_top + 70)))
 
-        btn_y = mr_top + 106
+        btn_y = mr_top + 98
         # [−] button
         minus_r = pygame.Rect(cx - 220, btn_y, 60, 34)
         pygame.draw.rect(surface, (50, 35, 70), minus_r, border_radius=6)
@@ -557,12 +628,12 @@ class ResearchLabScene(BaseScene):
         if not _busy:
             self._click_rects.append((train_r, "replay_train"))
 
-        # Progress bar (while training), saving indicator, or result text (when done)
+        # Progress bar / saving indicator / result text
         if self._replay_running:
             bar_w = 280
             bar_h = 10
             bar_x = cx - bar_w // 2
-            bar_y = btn_y + 46
+            bar_y = btn_y + 44
             pygame.draw.rect(surface, (35, 22, 55), (bar_x, bar_y, bar_w, bar_h), border_radius=4)
             fill_w = int(bar_w * self._replay_progress)
             if fill_w > 0:
@@ -573,15 +644,15 @@ class ResearchLabScene(BaseScene):
             surface.blit(pct_s, pct_s.get_rect(center=(cx, bar_y + bar_h + 14)))
         elif self._replay_saving:
             sv = self._font_small.render("Saving checkpoints...", True, (255, 200, 60))
-            surface.blit(sv, sv.get_rect(center=(cx, btn_y + 48)))
+            surface.blit(sv, sv.get_rect(center=(cx, btn_y + 46)))
         elif self._replay_result_lines:
             for j, line in enumerate(self._replay_result_lines):
                 rs = self._font_small.render(line, True, (180, 220, 180))
-                surface.blit(rs, rs.get_rect(center=(cx, btn_y + 44 + j * 18)))
+                surface.blit(rs, rs.get_rect(center=(cx, btn_y + 44 + j * 16)))
 
         # Start battle button
-        bb_y     = btn_y + 74
-        btn_rect = pygame.Rect(cx - 150, bb_y, 300, 48)
+        bb_y     = btn_y + 110
+        btn_rect = pygame.Rect(cx - 150, bb_y, 300, 44)
         pygame.draw.rect(surface, (25, 70, 30), btn_rect, border_radius=8)
         pygame.draw.rect(surface, (60, 180, 70), btn_rect, 2, border_radius=8)
         btn_t = self._font_btn.render("[B] Start Battle", True, (140, 255, 150))

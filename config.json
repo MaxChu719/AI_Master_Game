@@ -71,7 +71,7 @@
   "dqn": {
     "learning_rate": 0.0005,
     "gamma": 0.99,
-    "batch_size": 64,
+    "batch_size": 32,
     "replay_buffer_size": 10000,
     "min_buffer_size": 500,
     "soft_update_tau": 0.005,
@@ -106,7 +106,10 @@
     "archer_min_safe_dist": 70.0,
     "archer_shoot_range": 270.0,
     "arrow_speed": 420.0,
-    "wall_safe_dist": 80.0
+    "wall_safe_dist": 80.0,
+    "mage_preferred_dist": 200.0,
+    "mage_min_safe_dist": 80.0,
+    "mage_shoot_range": 250.0
   },
 
   "observation": {
@@ -280,6 +283,31 @@
       "too_far_range":      320.0,
       "ideal_range_bonus":  0.02,
       "bad_range_penalty":  0.01
+    },
+
+    "fire_mage": {
+      "_comment": "Rewards for Fire Mage DQN. damage_scale per HP of fireball AoE damage, kill_bonus per kill. Positional: range_bonus when at preferred_range, too_close_penalty when inside min_safe_dist.",
+      "damage_scale":        1.0,
+      "damage_taken_scale":  1.0,
+      "kill_bonus":          5.0,
+      "preferred_range":   210.0,
+      "preferred_margin":   60.0,
+      "min_safe_dist":      80.0,
+      "range_bonus":         0.02,
+      "too_close_penalty":   0.01
+    },
+
+    "ice_mage": {
+      "_comment": "Rewards for Ice Mage DQN. damage_scale per HP of iceball damage, freeze_bonus on successful freeze, kill_bonus per kill.",
+      "damage_scale":        1.0,
+      "damage_taken_scale":  1.0,
+      "kill_bonus":          5.0,
+      "freeze_bonus":        2.0,
+      "preferred_range":   200.0,
+      "preferred_margin":   60.0,
+      "min_safe_dist":      80.0,
+      "range_bonus":         0.02,
+      "too_close_penalty":   0.01
     }
   },
 
