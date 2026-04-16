@@ -118,7 +118,8 @@ class BattleSimulationScene(BaseScene):
 
         # ── Sim config ────────────────────────────────────────────────────
         counts              = sim_cfg.get("counts", {})
-        self._train_steps   = max(1, int(sim_cfg.get("train_steps", 1)))
+        self._train_steps   = max(1,   int(sim_cfg.get("train_steps",  1)))
+        self._buffer_rate   = max(1,   int(sim_cfg.get("buffer_rate",  10)))
         self._swarm_rate    = max(1.0, float(sim_cfg.get("swarm_rate", 60)))
         self._boss_every    = max(30.0, float(sim_cfg.get("boss_every", 120)))
 
@@ -320,12 +321,13 @@ class BattleSimulationScene(BaseScene):
 
     # Param step table — (min, step, max)
     _PARAM_STEPS = {
-        "train_steps": (1,    1,    50),
-        "swarm_rate":  (10,   10,   300),
-        "boss_every":  (30,   30,   600),
-        "lr":          (1e-5, 1e-5, 1e-3),
-        "batch":       (8,    8,    256),
-        "gamma":       (0.90, 0.01, 0.9999),
+        "train_steps":  (1,    1,    50),
+        "buffer_rate":  (1,    1,    60),
+        "swarm_rate":   (10,   10,   300),
+        "boss_every":   (30,   30,   600),
+        "lr":           (1e-5, 1e-5, 1e-3),
+        "batch":        (8,    8,    256),
+        "gamma":        (0.90, 0.01, 0.9999),
     }
 
     def _adjust_param(self, key: str, delta: int):
@@ -335,6 +337,9 @@ class BattleSimulationScene(BaseScene):
         if key == "train_steps":
             self._train_steps = max(int(lo), min(int(hi),
                                     self._train_steps + delta * int(step)))
+        elif key == "buffer_rate":
+            self._buffer_rate = max(int(lo), min(int(hi),
+                                    self._buffer_rate + delta * int(step)))
         elif key == "swarm_rate":
             self._swarm_rate = max(lo, min(hi, self._swarm_rate + delta * step))
         elif key == "boss_every":
@@ -555,11 +560,16 @@ class BattleSimulationScene(BaseScene):
                 self.spider_webs.append(web)
         for web in self.spider_webs:
             web.update(dt)
-            if web.is_alive:
-                for m in all_live:
-                    if web.pos.distance_to(m.pos) <= m.size + web.size:
-                        web.hit(m)
-                        break
+            if not web.is_alive:
+                continue
+            for m in all_live:
+                hit_dist = (web.size + m.size) // 2 + 2
+                if web.pos.distance_to(m.pos) <= hit_dist:
+                    m.hp = max(0, m.hp - web.damage)
+                    m.frozen_timer = max(getattr(m, 'frozen_timer', 0.0),
+                                        web.freeze_duration)
+                    web.is_alive = False
+                    break
         self.spider_webs = [w for w in self.spider_webs if w.is_alive]
 
         # ── Creeper explosions ────────────────────────────────────────────
@@ -717,30 +727,49 @@ class BattleSimulationScene(BaseScene):
     # ── Arena frame capture (image obs) ──────────────────────────────────────
 
     def _capture_arena_frame(self):
-        """Return a float32 grayscale array (ARENA_H × ARENA_W) for image obs."""
+        """Return a float32 grayscale array (ARENA_H × ARENA_W) for image obs.
+
+        Rendering is identical to BattleScene._render_obs_frame() so that
+        observations are transferable between simulation and real waves.
+        No HUD elements are painted — only arena entities.
+        """
         arena_h = int(_ARENA_H)
         arena_w = int(_ARENA_W)
         frame   = np.zeros((arena_h, arena_w), dtype=np.float32)
 
-        def _paint(pos, size, val):
-            cx = int(pos.x - ARENA_LEFT)
-            cy = int(pos.y - ARENA_TOP)
-            r  = max(1, int(size))
-            x0 = max(0, cx - r); x1 = min(arena_w, cx + r + 1)
-            y0 = max(0, cy - r); y1 = min(arena_h, cy + r + 1)
-            frame[y0:y1, x0:x1] = val
+        def _fill(pos, size: int, val: float):
+            x = int(pos.x - ARENA_LEFT)
+            y = int(pos.y - ARENA_TOP)
+            r = max(1, size // 2)
+            x0, x1 = max(0, x - r), min(arena_w, x + r + 1)
+            y0, y1 = max(0, y - r), min(arena_h, y + r + 1)
+            if x0 < x1 and y0 < y1:
+                frame[y0:y1, x0:x1] = val
 
         for e in self.enemies:
             if e.is_alive:
-                _paint(e.pos, getattr(e, "size", 9), 0.80)
+                val = 0.87 if isinstance(e, Spider) else 0.80
+                _fill(e.pos, e.size, val)
         if self.boss is not None and self.boss.is_alive:
-            _paint(self.boss.pos, 30, 0.95)
-        for m in self.fighters + self.archers + self.fire_mages + self.ice_mages:
-            if m.is_alive:
-                _paint(m.pos, getattr(m, "size", 12), 0.40)
+            _fill(self.boss.pos, self.boss.size, 0.95)
         for p in self.projectiles:
             if p.is_alive:
-                _paint(p.pos, 3, 0.55)
+                x = int(p.pos.x - ARENA_LEFT)
+                y = int(p.pos.y - ARENA_TOP)
+                if 0 <= x < arena_w and 0 <= y < arena_h:
+                    frame[y, x] = 0.55
+        for f in self.fighters:
+            if f.is_alive:
+                _fill(f.pos, f.size, 0.40)
+        for a in self.archers:
+            if a.is_alive:
+                _fill(a.pos, a.size, 0.40)
+        for fm in self.fire_mages:
+            if fm.is_alive:
+                _fill(fm.pos, fm.size, 0.40)
+        for im in self.ice_mages:
+            if im.is_alive:
+                _fill(im.pos, im.size, 0.40)
         return frame
 
     # ── DQN training ─────────────────────────────────────────────────────────
@@ -761,7 +790,7 @@ class BattleSimulationScene(BaseScene):
                 env.capture_frame(post_frame)
                 next_obs = env.get_observation()
                 done     = env.is_done()
-                if env.frame_counter % _STORE_INTERVAL == 0 or done:
+                if env.frame_counter % self._buffer_rate == 0 or done:
                     acc = env._accumulated_reward
                     agent.store_transition(obs, act, acc, next_obs, done)
                     env._accumulated_reward = 0.0
@@ -936,18 +965,19 @@ class BattleSimulationScene(BaseScene):
         # Scrollable params
         params = [
             # (label, current_value_fn, fmt, key)
-            ("Train Steps/Frame", lambda: self._train_steps,      lambda v: str(int(v)),   "train_steps"),
-            ("Swarm Rate/min",    lambda: self._swarm_rate,       lambda v: str(int(v)),   "swarm_rate"),
-            ("Boss Interval (s)", lambda: self._boss_every,       lambda v: str(int(v)),   "boss_every"),
-            ("Learning Rate",     lambda: (self.fighter_agent.lr
-                                           if self.fighter_agent else 1e-4),
-                                           lambda v: f"{v:.1e}",  "lr"),
-            ("Batch Size",        lambda: (self.fighter_agent.batch_size
-                                           if self.fighter_agent else 32),
-                                           lambda v: str(int(v)), "batch"),
-            ("Gamma",             lambda: (self.fighter_agent.gamma
-                                           if self.fighter_agent else 0.99),
-                                           lambda v: f"{v:.4f}",  "gamma"),
+            ("Train Steps/Frame",  lambda: self._train_steps,     lambda v: str(int(v)),   "train_steps"),
+            ("Buffer Rate (frames)", lambda: self._buffer_rate,   lambda v: str(int(v)),   "buffer_rate"),
+            ("Swarm Rate/min",     lambda: self._swarm_rate,      lambda v: str(int(v)),   "swarm_rate"),
+            ("Boss Interval (s)",  lambda: self._boss_every,      lambda v: str(int(v)),   "boss_every"),
+            ("Learning Rate",      lambda: (self.fighter_agent.lr
+                                            if self.fighter_agent else 1e-4),
+                                            lambda v: f"{v:.1e}", "lr"),
+            ("Batch Size",         lambda: (self.fighter_agent.batch_size
+                                            if self.fighter_agent else 32),
+                                            lambda v: str(int(v)), "batch"),
+            ("Gamma",              lambda: (self.fighter_agent.gamma
+                                            if self.fighter_agent else 0.99),
+                                            lambda v: f"{v:.4f}", "gamma"),
         ]
 
         content_top = 76

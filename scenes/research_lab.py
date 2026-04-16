@@ -112,14 +112,16 @@ class ResearchLabScene(BaseScene):
         self._sim_panel_open  = True    # DQN params panel expanded/collapsed
         self._sim_scroll      = 0       # scroll offset (pixels) inside expanded panel
         # DQN/training params (passed to BattleSimulationScene on launch)
-        self._sim_train_steps = 1       # DQN train_step() calls per frame
-        self._sim_lr          = 1e-4    # learning rate (float)
-        self._sim_batch       = 32      # batch size
-        self._sim_gamma       = 0.99    # discount factor
-        self._sim_noise_sigma = 0.5     # NoisyNet initial sigma
-        # Monster spawn rates (per minute)
-        self._sim_swarm_rate  = 60
-        self._sim_boss_every  = 120     # seconds between boss spawns
+        _bsim = CFG.get("battle_simulation", {})
+        self._sim_train_steps  = int(_bsim.get("default_train_steps", 1))
+        self._sim_buffer_rate  = int(_bsim.get("default_buffer_rate", 10))
+        self._sim_lr           = float(_bsim.get("default_lr",          1e-4))
+        self._sim_batch        = int(_bsim.get("default_batch",         32))
+        self._sim_gamma        = float(_bsim.get("default_gamma",       0.99))
+        self._sim_noise_sigma  = float(_bsim.get("default_noise_sigma", 0.5))
+        # Monster spawn rates
+        self._sim_swarm_rate  = int(_bsim.get("default_swarm_rate",   60))
+        self._sim_boss_every  = int(_bsim.get("default_boss_every",   120))
 
     # ── Accessors ─────────────────────────────────────────────────────────
 
@@ -280,24 +282,25 @@ class ResearchLabScene(BaseScene):
         self.game_manager.push_scene(TrainingSetupScene(self.game_manager))
 
     def _sim_cost(self) -> int:
-        """Total MP cost for the configured minion composition."""
-        sp = CFG["spells"]
+        """Total coin cost for the configured minion composition."""
+        dc = CFG.get("battle_simulation", {}).get("deploy_costs", {})
         cost = 0
-        cost += self._sim_counts["fighter"]   * int(sp.get("summon_fighter",   {}).get("mp_cost", 50))
-        cost += self._sim_counts["archer"]    * int(sp.get("summon_archer",    {}).get("mp_cost", 40))
-        cost += self._sim_counts["fire_mage"] * int(sp.get("summon_fire_mage", {}).get("mp_cost", 60))
-        cost += self._sim_counts["ice_mage"]  * int(sp.get("summon_ice_mage",  {}).get("mp_cost", 55))
+        cost += self._sim_counts["fighter"]   * int(dc.get("fighter",   50))
+        cost += self._sim_counts["archer"]    * int(dc.get("archer",    40))
+        cost += self._sim_counts["fire_mage"] * int(dc.get("fire_mage", 60))
+        cost += self._sim_counts["ice_mage"]  * int(dc.get("ice_mage",  55))
         return cost
 
     # Param step sizes for +/- buttons in the DQN panel
     _SIM_PARAM_STEPS = {
-        "train_steps": (1, 1, 50),    # (min, step, max)
-        "lr":          (1e-5, 1e-5, 1e-3),
-        "batch":       (8, 8, 256),
-        "gamma":       (0.90, 0.01, 0.9999),
-        "noise_sigma": (0.1, 0.05, 1.0),
-        "swarm_rate":  (10, 10, 300),
-        "boss_every":  (30, 30, 600),
+        "train_steps":  (1, 1, 50),    # (min, step, max)
+        "buffer_rate":  (1, 1, 60),
+        "lr":           (1e-5, 1e-5, 1e-3),
+        "batch":        (8, 8, 256),
+        "gamma":        (0.90, 0.01, 0.9999),
+        "noise_sigma":  (0.1, 0.05, 1.0),
+        "swarm_rate":   (10, 10, 300),
+        "boss_every":   (30, 30, 600),
     }
 
     def _adjust_sim_param(self, key: str, delta: int):
@@ -318,14 +321,15 @@ class ResearchLabScene(BaseScene):
             self._flash("No agents — start a regular battle first.")
             return
         sim_cfg = {
-            "counts":      dict(self._sim_counts),
-            "train_steps": self._sim_train_steps,
-            "lr":          self._sim_lr,
-            "batch":       self._sim_batch,
-            "gamma":       self._sim_gamma,
-            "noise_sigma": self._sim_noise_sigma,
-            "swarm_rate":  self._sim_swarm_rate,
-            "boss_every":  self._sim_boss_every,
+            "counts":       dict(self._sim_counts),
+            "train_steps":  self._sim_train_steps,
+            "buffer_rate":  self._sim_buffer_rate,
+            "lr":           self._sim_lr,
+            "batch":        self._sim_batch,
+            "gamma":        self._sim_gamma,
+            "noise_sigma":  self._sim_noise_sigma,
+            "swarm_rate":   self._sim_swarm_rate,
+            "boss_every":   self._sim_boss_every,
         }
         self.game_manager.save_game()
         from scenes.battle_simulation import BattleSimulationScene
@@ -768,12 +772,12 @@ class ResearchLabScene(BaseScene):
             ("fire_mage", "Fire Mage", (255, 120, 40)),
             ("ice_mage",  "Ice Mage",  (80, 200, 255)),
         ]
-        sp = CFG["spells"]
-        mp_costs = {
-            "fighter":   int(sp.get("summon_fighter",   {}).get("mp_cost", 50)),
-            "archer":    int(sp.get("summon_archer",    {}).get("mp_cost", 40)),
-            "fire_mage": int(sp.get("summon_fire_mage", {}).get("mp_cost", 60)),
-            "ice_mage":  int(sp.get("summon_ice_mage",  {}).get("mp_cost", 55)),
+        _dc = CFG.get("battle_simulation", {}).get("deploy_costs", {})
+        deploy_costs = {
+            "fighter":   int(_dc.get("fighter",   50)),
+            "archer":    int(_dc.get("archer",    40)),
+            "fire_mage": int(_dc.get("fire_mage", 60)),
+            "ice_mage":  int(_dc.get("ice_mage",  55)),
         }
 
         comp_y = top_y + 48
@@ -800,15 +804,15 @@ class ResearchLabScene(BaseScene):
             cs    = font_stat.render(str(count), True, (255, 255, 255))
             surface.blit(cs, cs.get_rect(center=(col_cx, comp_y + 49)))
 
-            unit_cost      = mp_costs[key]
+            unit_cost      = deploy_costs[key]
             total_for_role = count * unit_cost
             cost_s = font_small.render(
-                f"{unit_cost} MP each  ×{count} = {total_for_role} MP",
+                f"{unit_cost}¢ each  ×{count} = {total_for_role}¢",
                 True, (180, 160, 220))
             surface.blit(cost_s, cost_s.get_rect(center=(col_cx, comp_y + 74)))
 
         total_cost = self._sim_cost()
-        tc_s = font_stat.render(f"Total Simulation Cost: {total_cost} MP", True, (255, 215, 0))
+        tc_s = font_stat.render(f"Total Cost: {total_cost} Coins", True, (255, 215, 0))
         surface.blit(tc_s, tc_s.get_rect(center=(cx, comp_y + 100)))
 
         # ── Section: Advanced DQN Parameters (collapsible) ────────────────
@@ -831,13 +835,14 @@ class ResearchLabScene(BaseScene):
             surface.set_clip(clip_rect)
 
             params = [
-                ("DQN Training Steps / Frame", "_sim_train_steps", lambda v: str(int(v)),   "train_steps"),
-                ("Learning Rate",              "_sim_lr",          lambda v: f"{v:.1e}",    "lr"),
-                ("Batch Size",                 "_sim_batch",       lambda v: str(int(v)),   "batch"),
-                ("Discount Factor (γ)",        "_sim_gamma",       lambda v: f"{v:.4f}",    "gamma"),
-                ("NoisyNet Sigma (exploration)", "_sim_noise_sigma", lambda v: f"{v:.2f}", "noise_sigma"),
-                ("Swarm Spawn Rate (/ min)",   "_sim_swarm_rate",  lambda v: str(int(v)),   "swarm_rate"),
-                ("Boss Spawn Interval (s)",    "_sim_boss_every",  lambda v: str(int(v)),   "boss_every"),
+                ("DQN Training Steps / Frame", "_sim_train_steps",  lambda v: str(int(v)),   "train_steps"),
+                ("Memory Buffer Rate (frames)", "_sim_buffer_rate", lambda v: str(int(v)),   "buffer_rate"),
+                ("Learning Rate",              "_sim_lr",           lambda v: f"{v:.1e}",    "lr"),
+                ("Batch Size",                 "_sim_batch",        lambda v: str(int(v)),   "batch"),
+                ("Discount Factor (γ)",        "_sim_gamma",        lambda v: f"{v:.4f}",    "gamma"),
+                ("NoisyNet Sigma (exploration)", "_sim_noise_sigma", lambda v: f"{v:.2f}",  "noise_sigma"),
+                ("Swarm Spawn Rate (/ min)",   "_sim_swarm_rate",   lambda v: str(int(v)),   "swarm_rate"),
+                ("Boss Spawn Interval (s)",    "_sim_boss_every",   lambda v: str(int(v)),   "boss_every"),
             ]
 
             row_h_p    = 34

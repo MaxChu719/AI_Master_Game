@@ -396,11 +396,19 @@
     "_comment": "Defaults for the Research Lab Battle Simulation mode.",
     "revive_delay":        3.0,
     "default_train_steps": 1,
+    "default_buffer_rate": 10,
     "default_swarm_rate":  60,
     "default_boss_every":  120,
     "default_lr":          0.0001,
     "default_batch":       32,
     "default_gamma":       0.99,
-    "default_noise_sigma": 0.5
+    "default_noise_sigma": 0.5,
+    "_comment_deploy": "Coin cost to deploy each minion type in simulation (default = MP cost of corresponding summon spell).",
+    "deploy_costs": {
+      "fighter":   50,
+      "archer":    40,
+      "fire_mage": 60,
+      "ice_mage":  55
+    }
   }
 }
