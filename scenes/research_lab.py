@@ -88,7 +88,7 @@ class ResearchLabScene(BaseScene):
         self._font_btn    = pygame.font.SysFont("arial", 26, bold=True)
         self._font_tab    = pygame.font.SysFont("arial", 20, bold=True)
 
-        # Active tab: 0 = AI Minions, 1 = AI Master
+        # Active tab: 0 = AI Minions, 1 = AI Master, 2 = Battle Simulation
         self._tab    = 0
         self._col    = 0   # 0=fighter,1=archer,2=fire_mage,3=ice_mage
         self._row    = 0   # selected row within current column
@@ -106,6 +106,20 @@ class ResearchLabScene(BaseScene):
         self._replay_saving       = False
         self._replay_progress     = 0.0
         self._replay_thread : threading.Thread | None = None
+
+        # Battle Simulation config
+        self._sim_counts = {"fighter": 0, "archer": 0, "fire_mage": 0, "ice_mage": 0}
+        self._sim_panel_open  = True    # DQN params panel expanded/collapsed
+        self._sim_scroll      = 0       # scroll offset (pixels) inside expanded panel
+        # DQN/training params (passed to BattleSimulationScene on launch)
+        self._sim_train_steps = 1       # DQN train_step() calls per frame
+        self._sim_lr          = 1e-4    # learning rate (float)
+        self._sim_batch       = 32      # batch size
+        self._sim_gamma       = 0.99    # discount factor
+        self._sim_noise_sigma = 0.5     # NoisyNet initial sigma
+        # Monster spawn rates (per minute)
+        self._sim_swarm_rate  = 60
+        self._sim_boss_every  = 120     # seconds between boss spawns
 
     # ── Accessors ─────────────────────────────────────────────────────────
 
@@ -142,12 +156,17 @@ class ResearchLabScene(BaseScene):
             self._process_key(event.key)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self._process_click(event.pos)
+        elif event.type == pygame.MOUSEWHEEL and self._tab == 2 and self._sim_panel_open:
+            self._sim_scroll = max(0, self._sim_scroll - event.y * 30)
 
     def _process_key(self, key: int):
         if key == pygame.K_ESCAPE:
             self.game_manager.pop_scene()
         elif key == pygame.K_TAB:
-            self._tab = (self._tab + 1) % 2
+            self._tab = (self._tab + 1) % 3
+        elif self._tab == 2:   # Battle Simulation tab keyboard nav
+            if key == pygame.K_b:
+                self._start_simulation()
         elif self._tab == 1:   # AI Master tab keyboard nav
             if key == pygame.K_UP:
                 self._aim_row = (self._aim_row - 1) % len(_AI_MASTER_ROWS)
@@ -206,6 +225,21 @@ class ResearchLabScene(BaseScene):
                                          self._replay_iters + 50)
             elif kind == "replay_train":
                 self._start_replay_training()
+            elif kind == "sim_count":
+                _, _, minion_key, delta = info
+                self._sim_counts[minion_key] = max(0, self._sim_counts[minion_key] + delta)
+            elif kind == "sim_panel_toggle":
+                self._sim_panel_open = not self._sim_panel_open
+                self._sim_scroll = 0
+            elif kind == "sim_param":
+                _, _, param_key, delta = info
+                self._adjust_sim_param(param_key, delta)
+            elif kind == "sim_scroll_up":
+                self._sim_scroll = max(0, self._sim_scroll - 40)
+            elif kind == "sim_scroll_down":
+                self._sim_scroll += 40
+            elif kind == "sim_start":
+                self._start_simulation()
             break
 
     # ── Upgrades ──────────────────────────────────────────────────────────
@@ -244,6 +278,58 @@ class ResearchLabScene(BaseScene):
         self.game_manager.save_game()
         from scenes.training_setup import TrainingSetupScene
         self.game_manager.push_scene(TrainingSetupScene(self.game_manager))
+
+    def _sim_cost(self) -> int:
+        """Total MP cost for the configured minion composition."""
+        sp = CFG["spells"]
+        cost = 0
+        cost += self._sim_counts["fighter"]   * int(sp.get("summon_fighter",   {}).get("mp_cost", 50))
+        cost += self._sim_counts["archer"]    * int(sp.get("summon_archer",    {}).get("mp_cost", 40))
+        cost += self._sim_counts["fire_mage"] * int(sp.get("summon_fire_mage", {}).get("mp_cost", 60))
+        cost += self._sim_counts["ice_mage"]  * int(sp.get("summon_ice_mage",  {}).get("mp_cost", 55))
+        return cost
+
+    # Param step sizes for +/- buttons in the DQN panel
+    _SIM_PARAM_STEPS = {
+        "train_steps": (1, 1, 50),    # (min, step, max)
+        "lr":          (1e-5, 1e-5, 1e-3),
+        "batch":       (8, 8, 256),
+        "gamma":       (0.90, 0.01, 0.9999),
+        "noise_sigma": (0.1, 0.05, 1.0),
+        "swarm_rate":  (10, 10, 300),
+        "boss_every":  (30, 30, 600),
+    }
+
+    def _adjust_sim_param(self, key: str, delta: int):
+        """Increment (+1) or decrement (-1) a simulation parameter by one step."""
+        if key not in self._SIM_PARAM_STEPS:
+            return
+        lo, step, hi = self._SIM_PARAM_STEPS[key]
+        attr = f"_sim_{key}"
+        cur  = getattr(self, attr)
+        if isinstance(lo, int):
+            nv = max(lo, min(hi, cur + delta * step))
+        else:
+            nv = round(max(lo, min(hi, cur + delta * step)), 6)
+        setattr(self, attr, nv)
+
+    def _start_simulation(self):
+        if self.game_manager.fighter_agent is None:
+            self._flash("No agents — start a regular battle first.")
+            return
+        sim_cfg = {
+            "counts":      dict(self._sim_counts),
+            "train_steps": self._sim_train_steps,
+            "lr":          self._sim_lr,
+            "batch":       self._sim_batch,
+            "gamma":       self._sim_gamma,
+            "noise_sigma": self._sim_noise_sigma,
+            "swarm_rate":  self._sim_swarm_rate,
+            "boss_every":  self._sim_boss_every,
+        }
+        self.game_manager.save_game()
+        from scenes.battle_simulation import BattleSimulationScene
+        self.game_manager.push_scene(BattleSimulationScene(self.game_manager, sim_cfg))
 
     def _flash(self, text: str):
         self._msg       = text
@@ -359,8 +445,8 @@ class ResearchLabScene(BaseScene):
         pygame.draw.line(surface, (50, 50, 80), (40, 96), (sw - 40, 96), 1)
 
         # ── Tab strip ──────────────────────────────────────────────────────
-        tab_labels = ["AI Minions", "AI Master"]
-        tab_colors = [(100, 220, 150), (200, 130, 255)]
+        tab_labels = ["AI Minions", "AI Master", "Battle Simulation"]
+        tab_colors = [(100, 220, 150), (200, 130, 255), (255, 180, 60)]
         tab_w = 200
         tab_h = 36
         tab_y = 102
@@ -380,8 +466,10 @@ class ResearchLabScene(BaseScene):
 
         if self._tab == 0:
             self._draw_minion_tab(surface, sw, sh, cx, content_top)
-        else:
+        elif self._tab == 1:
             self._draw_ai_master_tab(surface, sw, sh, cx, content_top)
+        else:
+            self._draw_battle_simulation_tab(surface, sw, sh, cx, content_top)
 
         # ── Flash message ──────────────────────────────────────────────────
         if self._msg and self._msg_timer > 0:
@@ -660,3 +748,168 @@ class ResearchLabScene(BaseScene):
         btn_t = self._font_btn.render("[B] Start Battle", True, (140, 255, 150))
         surface.blit(btn_t, btn_t.get_rect(center=btn_rect.center))
         self._click_rects.append((btn_rect, "battle"))
+
+    # ── Battle Simulation tab ─────────────────────────────────────────────
+
+    def _draw_battle_simulation_tab(self, surface, sw, sh, cx, top_y):
+        """Render the Battle Simulation configuration tab."""
+        font_hdr   = self._font_header
+        font_stat  = self._font_stat
+        font_small = self._font_small
+        font_btn   = self._font_btn
+
+        # ── Section: Minion Composition ───────────────────────────────────
+        hdr = font_hdr.render("Minion Composition", True, (255, 200, 80))
+        surface.blit(hdr, hdr.get_rect(center=(cx, top_y + 16)))
+
+        minion_defs = [
+            ("fighter",   "Fighter",   (100, 160, 255)),
+            ("archer",    "Archer",    (100, 255, 140)),
+            ("fire_mage", "Fire Mage", (255, 120, 40)),
+            ("ice_mage",  "Ice Mage",  (80, 200, 255)),
+        ]
+        sp = CFG["spells"]
+        mp_costs = {
+            "fighter":   int(sp.get("summon_fighter",   {}).get("mp_cost", 50)),
+            "archer":    int(sp.get("summon_archer",    {}).get("mp_cost", 40)),
+            "fire_mage": int(sp.get("summon_fire_mage", {}).get("mp_cost", 60)),
+            "ice_mage":  int(sp.get("summon_ice_mage",  {}).get("mp_cost", 55)),
+        }
+
+        comp_y = top_y + 48
+        for ci, (key, label, col) in enumerate(minion_defs):
+            col_cx = sw * (ci + 1) // (len(minion_defs) + 1)
+            dot_r  = 7
+            pygame.draw.circle(surface, col, (col_cx - 50, comp_y + 10), dot_r)
+            ls = font_stat.render(label, True, col)
+            surface.blit(ls, ls.get_rect(midleft=(col_cx - 40, comp_y + 10)))
+
+            btn_h  = 30
+            btn_w  = 30
+            minus_r = pygame.Rect(col_cx - 55, comp_y + 34, btn_w, btn_h)
+            plus_r  = pygame.Rect(col_cx + 25, comp_y + 34, btn_w, btn_h)
+            for r, lbl in ((minus_r, "−"), (plus_r, "+")):
+                pygame.draw.rect(surface, (50, 35, 70), r, border_radius=5)
+                pygame.draw.rect(surface, (100, 70, 140), r, 2, border_radius=5)
+                bs = font_btn.render(lbl, True, (200, 180, 255))
+                surface.blit(bs, bs.get_rect(center=r.center))
+            self._click_rects.append((minus_r, "sim_count", key, -1))
+            self._click_rects.append((plus_r,  "sim_count", key,  1))
+
+            count = self._sim_counts[key]
+            cs    = font_stat.render(str(count), True, (255, 255, 255))
+            surface.blit(cs, cs.get_rect(center=(col_cx, comp_y + 49)))
+
+            unit_cost      = mp_costs[key]
+            total_for_role = count * unit_cost
+            cost_s = font_small.render(
+                f"{unit_cost} MP each  ×{count} = {total_for_role} MP",
+                True, (180, 160, 220))
+            surface.blit(cost_s, cost_s.get_rect(center=(col_cx, comp_y + 74)))
+
+        total_cost = self._sim_cost()
+        tc_s = font_stat.render(f"Total Simulation Cost: {total_cost} MP", True, (255, 215, 0))
+        surface.blit(tc_s, tc_s.get_rect(center=(cx, comp_y + 100)))
+
+        # ── Section: Advanced DQN Parameters (collapsible) ────────────────
+        panel_top = comp_y + 132
+        pygame.draw.line(surface, (60, 50, 80), (cx - 320, panel_top), (cx + 320, panel_top), 1)
+
+        arrow = "▼" if self._sim_panel_open else "▶"
+        ph    = font_hdr.render(f"{arrow}  Advanced Parameters", True, (200, 160, 255))
+        toggle_rect = pygame.Rect(cx - ph.get_width() // 2 - 6, panel_top + 6,
+                                   ph.get_width() + 12, 28)
+        pygame.draw.rect(surface, (30, 22, 50), toggle_rect, border_radius=5)
+        surface.blit(ph, ph.get_rect(center=toggle_rect.center))
+        self._click_rects.append((toggle_rect, "sim_panel_toggle"))
+
+        if self._sim_panel_open:
+            panel_inner_top = panel_top + 40
+            panel_h         = sh - panel_inner_top - 80
+            clip_rect       = pygame.Rect(0, panel_inner_top, sw, panel_h)
+            old_clip        = surface.get_clip()
+            surface.set_clip(clip_rect)
+
+            params = [
+                ("DQN Training Steps / Frame", "_sim_train_steps", lambda v: str(int(v)),   "train_steps"),
+                ("Learning Rate",              "_sim_lr",          lambda v: f"{v:.1e}",    "lr"),
+                ("Batch Size",                 "_sim_batch",       lambda v: str(int(v)),   "batch"),
+                ("Discount Factor (γ)",        "_sim_gamma",       lambda v: f"{v:.4f}",    "gamma"),
+                ("NoisyNet Sigma (exploration)", "_sim_noise_sigma", lambda v: f"{v:.2f}", "noise_sigma"),
+                ("Swarm Spawn Rate (/ min)",   "_sim_swarm_rate",  lambda v: str(int(v)),   "swarm_rate"),
+                ("Boss Spawn Interval (s)",    "_sim_boss_every",  lambda v: str(int(v)),   "boss_every"),
+            ]
+
+            row_h_p    = 34
+            max_scroll = max(0, len(params) * row_h_p - panel_h + 8)
+            self._sim_scroll = min(self._sim_scroll, max_scroll)
+            draw_y = panel_inner_top - self._sim_scroll
+
+            for param_label, attr, fmt, pkey in params:
+                ry     = draw_y
+                draw_y += row_h_p
+                if ry + row_h_p < panel_inner_top or ry > panel_inner_top + panel_h:
+                    continue
+
+                pl_s = font_stat.render(param_label, True, (180, 170, 220))
+                surface.blit(pl_s, pl_s.get_rect(midleft=(cx - 300, ry + row_h_p // 2)))
+
+                val     = getattr(self, attr)
+                val_str = fmt(val)
+                vw      = 80
+                vx      = cx + 80
+
+                dec_r = pygame.Rect(vx - 48, ry + 3, 40, row_h_p - 6)
+                inc_r = pygame.Rect(vx + vw + 8, ry + 3, 40, row_h_p - 6)
+                val_r = pygame.Rect(vx,       ry + 3, vw, row_h_p - 6)
+
+                for r, lbl in ((dec_r, "−"), (inc_r, "+")):
+                    pygame.draw.rect(surface, (45, 32, 65), r, border_radius=5)
+                    pygame.draw.rect(surface, (100, 70, 150), r, 1, border_radius=5)
+                    bs = font_btn.render(lbl, True, (200, 180, 255))
+                    surface.blit(bs, bs.get_rect(center=r.center))
+
+                pygame.draw.rect(surface, (28, 20, 45), val_r, border_radius=4)
+                pygame.draw.rect(surface, (80, 60, 120), val_r, 1, border_radius=4)
+                vs = font_stat.render(val_str, True, (255, 240, 160))
+                surface.blit(vs, vs.get_rect(center=val_r.center))
+
+                self._click_rects.append((dec_r, "sim_param", pkey, -1))
+                self._click_rects.append((inc_r, "sim_param", pkey,  1))
+
+            if max_scroll > 0:
+                scroll_x = cx + 340
+                up_r   = pygame.Rect(scroll_x, panel_inner_top,               24, 24)
+                down_r = pygame.Rect(scroll_x, panel_inner_top + panel_h - 24, 24, 24)
+                for r, lbl in ((up_r, "▲"), (down_r, "▼")):
+                    pygame.draw.rect(surface, (40, 30, 60), r, border_radius=4)
+                    pygame.draw.rect(surface, (100, 70, 150), r, 1, border_radius=4)
+                    as_ = font_small.render(lbl, True, (180, 160, 220))
+                    surface.blit(as_, as_.get_rect(center=r.center))
+                self._click_rects.append((up_r,   "sim_scroll_up"))
+                self._click_rects.append((down_r, "sim_scroll_down"))
+
+            surface.set_clip(old_clip)
+
+        # ── Start Simulation button ───────────────────────────────────────
+        btn_y     = sh - 68
+        has_any   = any(v > 0 for v in self._sim_counts.values())
+        has_agents = self.game_manager.fighter_agent is not None
+        ready     = has_any and has_agents
+        bg_col    = (30, 70, 25) if ready else (30, 30, 30)
+        bd_col    = (60, 200, 70) if ready else (60, 60, 60)
+        txt_col   = (140, 255, 150) if ready else (80, 80, 80)
+        btn_rect  = pygame.Rect(cx - 160, btn_y, 320, 44)
+        pygame.draw.rect(surface, bg_col, btn_rect, border_radius=8)
+        pygame.draw.rect(surface, bd_col, btn_rect, 2, border_radius=8)
+        hint = "[B] Start Simulation" if ready else "[B] Add minions to start"
+        bt   = font_btn.render(hint, True, txt_col)
+        surface.blit(bt, bt.get_rect(center=btn_rect.center))
+        if ready:
+            self._click_rects.append((btn_rect, "sim_start"))
+
+        if not has_agents:
+            info_s = font_small.render(
+                "No DQN agents loaded — play a regular battle first.",
+                True, (200, 80, 80))
+            surface.blit(info_s, info_s.get_rect(center=(cx, btn_y - 20)))

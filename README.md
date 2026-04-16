@@ -222,7 +222,7 @@ def main():
 |---|---|
 | `MainMenuScene` | Start New Game (name input, override confirm) / Load Saved Game / Quit |
 | `LoadingScene` | Animated loading screen (spinning arc + dots) shown while `new_game()` or `load_save()` runs in a background thread; transitions to ResearchLab when done |
-| `ResearchLabScene` | 2-tab upgrade screen: AI Minions (4-column layout: Fighter, Archer, Fire Mage, Ice Mage — all 5 stats each), AI Master; Memory Replay training UI trains all 4 agents; "Start Battle" pushes TrainingSetupScene |
+| `ResearchLabScene` | 3-tab upgrade screen: **AI Minions** (4-column layout: Fighter, Archer, Fire Mage, Ice Mage — all 5 stats each), **AI Master** (upgrades + Memory Replay training), **Battle Simulation** (configure minion composition + DQN/game params, launch infinite simulation); "Start Battle" pushes TrainingSetupScene |
 | `TrainingSetupScene` | Pre-battle config: Mode (DQN Training / Preset+Train), LR, Warmup Preset Ratio, Min Buffer, Target Update Freq, Batch Size — applies to all agents before launching battle |
 | `BattleScene` | Core battle scene — wave combat + live Rainbow DQN training; returns to Research Lab on end |
 
@@ -715,6 +715,48 @@ def _project_distribution(self, next_dist, rewards, dones):
 - Kill bonus differentiation: fighter gains more from its own melee kills (5.0) than from team ranged kills (2.0 × weight), and vice versa for archer. This shapes role specialisation without a separate learning objective.
 - Spread penalty fires per ally within threshold; scales linearly with overlap. Deters all minions stacking on one target where AoE (Creeper, Boss fireball) would wipe them simultaneously.
 
+### Battle Simulation Mode
+
+Accessible from the **Research Lab → Battle Simulation** tab. This mode is designed to rapidly accumulate replay buffer data and run continuous DQN training without the constraint of 100-wave progression.
+
+**Pre-launch Configuration (Research Lab tab):**
+- **Minion Composition** — four independent spinners (Fighter / Archer / Fire Mage / Ice Mage) set exact spawn counts. Total MP cost is displayed dynamically (sum of each minion's standard summon cost × count).
+- **Advanced Parameters panel** (collapsible/scrollable) — configure DQN hyperparameters and game settings before launch:
+  - DQN Training Steps per Frame (1–50)
+  - Learning Rate (1×10⁻⁵ – 1×10⁻³)
+  - Batch Size (8–256)
+  - Discount Factor γ (0.90–0.9999)
+  - NoisyNet Sigma (0.1–1.0)
+  - Swarm Spawn Rate (enemies per minute, 10–300)
+  - Boss Spawn Interval in seconds (30–600)
+
+**Simulation Mechanics (`scenes/battle_simulation.py`):**
+- **Infinite combat** — no wave transitions or win/loss condition. Monsters spawn continuously based on `swarm_rate` (enemies/min). Difficulty (enemy HP/speed) scales slowly with elapsed minutes.
+- **Boss spawning** — a Boss is spawned every `boss_every` seconds when no boss is currently alive.
+- **Auto-revive** — when an AI minion dies, it enters a 3-second revive countdown (displayed as a floating timer above the tombstone). After the delay it revives at a random arena position with full HP and stamina, and its `MinionEnv.frame_counter` resets.
+- **DQN training** — runs synchronously on the main thread, `train_steps` calls per frame per agent, maximising buffer throughput. All four agents (Fighter, Archer, Fire Mage, Ice Mage) train simultaneously.
+
+**In-Simulation Control Panel:**
+- A foldable panel on the right side of the screen (toggle with the ◀/▶ button).
+- Shows a **scrollable list of live-adjustable parameters**: Train Steps/Frame, Swarm Rate, Boss Interval, Learning Rate, Batch Size, Gamma — each with [−] and [+] buttons. Mouse wheel also scrolls the list.
+- LR changes update the optimizer's `param_groups` immediately on all agents.
+- Batch size and gamma changes apply immediately to all agents.
+- Simulation HUD (top-left) shows: sim time, kill count, total training steps per role, current loss per role.
+
+Config keys (`config.json → battle_simulation`):
+```json
+{
+  "revive_delay":        3.0,
+  "default_train_steps": 1,
+  "default_swarm_rate":  60,
+  "default_boss_every":  120,
+  "default_lr":          0.0001,
+  "default_batch":       32,
+  "default_gamma":       0.99,
+  "default_noise_sigma": 0.5
+}
+```
+
 ### Memory Replay Training
 
 From the ResearchLab AI Master tab, the player can run off-policy training on the accumulated buffer:
@@ -831,7 +873,12 @@ During an active wave (`ACTIVE`), the player can spend **AI Master MP** to summo
 - **Summon Ice Mage**: costs `config.json → spells.summon_ice_mage.mp_cost` MP (default 55)
 - Total minions across **all types combined** is capped by a single global cap from `config.json → spawning.deployment_caps_global` (indexed by Deploy Limit upgrade level; default at level 0 = 2, fully upgraded at level 5 = 20)
 - Summon icons are greyed out when global cap is reached, wave not active, or insufficient MP; badge shows `total/cap`
-- `BattleScene._try_spawn_minion(role)` handles MP deduction, position selection, entity creation, `MinionEnv` creation, and list registration
+
+**Targeted Summon Placement:** Clicking a Summon icon enters a placement mode (identical to Healing/Fireball) — a hint bar appears at the bottom, and the player clicks anywhere in the arena to place the portal at that exact location. Right-click or ESC cancels.
+
+**Deferred MP Deduction:** MP is **not** deducted when the Summon icon is clicked or when the portal is placed. It is only deducted when the `SummonPortal` animation completes and the minion is successfully instantiated. If the wave ends while a portal is animating, the portal is silently discarded and no MP is lost. This is enforced in the portal completion check: `BattleScene` validates `wave == ACTIVE`, `mp >= portal.mp_cost`, and `total_minions < cap` before deducting and calling `_complete_spawn`.
+
+`BattleScene._cast_spell` handles portal creation for summons; `BattleScene._can_summon(spell_name)` checks the preconditions shared by both the icon-click and the arena-click phases.
 
 Deployment / spawning config:
 ```json
@@ -899,12 +946,12 @@ Research Lab upgrade cost: 50/100/150/200/250 coins per level (max 5 levels per 
 `hit_test_spell_panel(pos)` on HUD returns `"healing"`, `"fireball"`, `"summon_fighter"`, `"summon_archer"`, `"summon_fire_mage"`, `"summon_ice_mage"`, or `None`.
 
 In BattleScene:
-- Click any `summon_*` icon → calls `_try_spawn_minion(role)`: deducts MP, chooses spawn position, creates a `SummonPortal`, plays `summon_portal` SFX; actual entity created via `_complete_spawn(role, pos)` when portal animation finishes
-- Click `healing` / `fireball` icon → `_activate_spell(name)` → toggles `self.spell_mode`; checks MP and cooldown
-- Click arena with spell active → `_cast_spell(pos)`:
-  - **Healing**: instantiates `HealingEffect`, applies heal, starts cooldown
-  - **Fireball**: instantiates `FireballPending`, stored in `spell_effects`; detonation detected in update loop
-- Right-click cancels placement spell mode
+- Click any spell icon (Heal, Fireball, or Summon *) → `_activate_spell(name)` → toggles `self.spell_mode`; checks MP/cooldown/cap/wave-active preconditions
+- Click arena with spell mode active → `_cast_spell(pos)`:
+  - **Healing**: instantiates `HealingEffect`, applies heal, deducts MP, starts cooldown
+  - **Fireball**: instantiates `FireballPending`, stored in `spell_effects`; deducts MP; detonation detected in update loop
+  - **Summon (`summon_fighter` / `summon_archer` / `summon_fire_mage` / `summon_ice_mage`)**: places `SummonPortal` at clicked position; **MP is NOT deducted here** — it is deducted only when `portal.done` fires and all conditions are still met; actual entity created via `_complete_spawn(role, pos)`
+- Right-click or ESC cancels placement spell mode
 - MP regenerates at `_mp_regen` per second (capped at `max_mp`)
 
 ### MP System
@@ -923,10 +970,10 @@ In BattleScene:
 | ESC / click `[ESC]` | Return to main menu |
 | Click Heal icon | Enter healing placement mode |
 | Click Fireball icon | Enter fireball placement mode |
-| Click Summon F icon | Begin portal animation → spawn Fighter when portal completes (costs MP, active wave only) |
-| Click Summon A icon | Begin portal animation → spawn Archer when portal completes (costs MP, active wave only) |
-| Click Summon FM icon | Begin portal animation → spawn Fire Mage when portal completes (costs MP, active wave only) |
-| Click Summon IM icon | Begin portal animation → spawn Ice Mage when portal completes (costs MP, active wave only) |
+| Click Summon F icon | Enter Fighter placement mode; click arena to place portal; MP deducted only when portal finishes and minion spawns |
+| Click Summon A icon | Enter Archer placement mode; click arena to place portal; MP deducted only when portal finishes and minion spawns |
+| Click Summon FM icon | Enter Fire Mage placement mode; click arena to place portal; MP deducted only when portal finishes and minion spawns |
+| Click Summon IM icon | Enter Ice Mage placement mode; click arena to place portal; MP deducted only when portal finishes and minion spawns |
 | Right-click (during spell mode) | Cancel placement spell |
 | Click arena (spell mode active) | Cast placement spell at location |
 
@@ -950,7 +997,8 @@ ai_master/
 │   ├── loading.py           # Animated loading screen; runs new_game/load_save in background thread
 │   ├── research_lab.py      # 3-tab upgrade screen: Fighter / Archer / AI Master + Memory Replay
 │   ├── training_setup.py    # Pre-battle training config: mode, LR, warmup ratio, buffer, batch size
-│   └── battle.py            # Core battle scene (multi-minion, spells, boss, Rainbow DQN)
+│   ├── battle.py            # Core battle scene (multi-minion, spells, boss, Rainbow DQN)
+│   └── battle_simulation.py # Infinite combat simulation: auto-revive, continuous training, control panel
 ├── entities/
 │   ├── minion.py            # Fighter minion (stamina + sword arc + "F" label; frozen_timer)
 │   ├── archer.py            # Archer minion (ranged, stamina, "A" label; frozen_timer)
@@ -1008,7 +1056,7 @@ def update(dt, fighters, enemies, projectiles, archers, fighter_attack_dirs, bos
 - Global cap schedule (level → total): 0→2, 1→5, 2→8, 3→12, 4→16, 5→20
 - All fighters share `game_manager.fighter_agent`; all archers share `game_manager.archer_agent`
 - `MinionEnv.ally` = first alive minion of opposite type
-- `BattleScene._try_spawn_minion(role)` — checks `len(fighters) + len(archers) + len(fire_mages) + len(ice_mages) < self.spawn_cap_total`; deducts MP, creates `SummonPortal`; `_complete_spawn(role, pos)` called when portal `done` flag is set
+- `BattleScene._can_summon(spell_name)` — checks wave `ACTIVE`, `mp >= cost`, and `total_minions < cap`; used by both the icon-click phase (`_activate_spell`) and the arena-click phase (`_cast_spell`); `_complete_spawn(role, pos)` called (with MP deduction) only when `portal.done` and all conditions still hold
 - HUD reads `scene.spawn_cap_total` (falls back to last entry of `spawning.deployment_caps_global` from config)
 
 ---
@@ -1028,23 +1076,34 @@ numpy>=1.26.0             # Array operations
 
 ## 16. Last Implementation Notes
 
-> **MP system for Fire Mage and Ice Mage (completed):**
+> **Targeted Summon, MP Deduction Fix, and Battle Simulation Mode (completed):**
 >
-> **Problem**: Fire Mage and Ice Mage had a dummy `stamina = 100` field that was never depleted or regenerated. Shooting was not gated on any resource, and neither mage had an upgradeable MP stat in the Research Lab.
+> ### 1. Targeted Summon Placement
+> **Problem**: Summons spawned at a random arena position chosen in `_try_spawn_minion`, with no player control over placement.
 >
 > **Changes:**
-> - `config.json` — added `mp`, `mp_regen`, `mp_cost` to `fire_mage` (80 MP, 12/s, 35/shot) and `ice_mage` (80 MP, 10/s, 35/shot) sections.
-> - `entities/fire_mage.py` — replaced dummy stamina with real MP (`max_stamina`, `stamina_regen`, `stamina_cost` from config); `tick()` now regenerates MP each frame; `try_shoot_aimed()` and `try_shoot()` gate on `stamina >= stamina_cost` and deduct on fire; `draw()` now renders a magenta/purple MP bar above the HP bar.
-> - `entities/ice_mage.py` — same as fire_mage; MP bar is cyan/teal.
-> - `engine/game_manager.py` — added `"stamina": 0` to `_DEFAULT_RESEARCH` for both `fire_mage` and `ice_mage` (enables save compatibility for the new MP upgrade slot).
-> - `scenes/research_lab.py` — added `("MP", "stamina")` as 5th entry in `MAGE_STATS`; added `"+20 max MP per level"` to `_MAGE_STAT_EFFECTS`. Both mages now have 5 upgrade rows (same as Fighter/Archer).
-> - `scenes/battle.py` — `_apply_research()` and `_apply_research_single()` now apply `research_stamina_per_level` upgrades to mage `max_stamina`/`stamina` for both fire and ice mage.
-> - `ai/dqn.py` — `_mage_preset_action()` now checks `stamina_norm > 0.25` before choosing a shoot action (same pattern as archer preset).
-> - `ui/hud.py` — mage entries in the bottom-right minion stack panel now show `HP  XMP` instead of HP alone.
+> - `entities/spell_effect.py` — `SummonPortal.__init__` now accepts `mp_cost: float = 0.0`; stored on the portal instance for deferred deduction.
+> - `scenes/battle.py` — Removed `_try_spawn_minion`; replaced with `_can_summon(spell_name)` (shared precondition check). All six spell icons now route through `_activate_spell`; summon modes (`summon_fighter`, `summon_archer`, `summon_fire_mage`, `summon_ice_mage`) are handled alongside `"healing"` and `"fireball"` — clicking an icon sets `self.spell_mode = spell_name`. Clicking the arena with a summon mode active calls `_cast_spell(pos)` which places `SummonPortal` at the cursor position.
+> - `ui/hud.py` — `_draw_spell_hint` extended with 4 new branches for each summon mode (colour-coded per role).
 >
-> **Modified files**: `config.json`, `entities/fire_mage.py`, `entities/ice_mage.py`, `engine/game_manager.py`, `scenes/research_lab.py`, `scenes/battle.py`, `ai/dqn.py`, `ui/hud.py`
+> ### 2. MP Deduction Fix
+> **Problem**: `_try_spawn_minion` deducted MP immediately when the portal animation began. If the wave ended during the 1.2s animation, the player lost MP without a minion spawning.
+>
+> **Fix**: MP is now only deducted inside the portal completion loop in `_update_active` when `portal.done == True` AND `wave == ACTIVE AND mp >= portal.mp_cost AND total_minions < cap`. If any condition fails the portal completes silently without cost.
+>
+> ### 3. Battle Simulation Mode
+> **New files:**
+> - `scenes/battle_simulation.py` — `BattleSimulationScene(game_manager, sim_cfg)`. Infinite combat loop with continuous enemy spawning, periodic boss, auto-revive (3s delay, configurable via `config.json → battle_simulation.revive_delay`), and synchronous DQN training (N steps/frame per agent). Foldable/scrollable right-side control panel with live-adjustable: train steps/frame, swarm rate, boss interval, LR, batch size, gamma.
+>
+> **Modified files:**
+> - `scenes/research_lab.py` — Added 3rd tab "Battle Simulation". Tab cycle is now `% 3`. New state vars: `_sim_counts`, `_sim_panel_open`, `_sim_scroll`, `_sim_train_steps`, `_sim_lr`, `_sim_batch`, `_sim_gamma`, `_sim_noise_sigma`, `_sim_swarm_rate`, `_sim_boss_every`. New methods: `_sim_cost()`, `_adjust_sim_param()`, `_start_simulation()`, `_draw_battle_simulation_tab()`. Mouse-wheel scroll supported on the DQN params panel.
+> - `data/config.json` — Added `battle_simulation` section with default values for all simulation parameters.
 >
 > **Design notes:**
-> - `stamina`/`max_stamina` field names are retained (not renamed to `mp`) for vector observation compatibility — `minion_env.py` reads `[3] self_stamina_norm` which now accurately reflects the mage's current MP fraction.
-> - At base values, Fire Mage MP slightly depletes with sustained fire (net −2.5 MP/cycle at 2.5s CD). Ice Mage barely sustains (net −5 MP/cycle at 3.0s CD). Both recover within ~7s from empty.
-> - Existing saves without the `stamina` research key will load cleanly — `load_save()` fills missing keys with 0 via `setdefault`.
+> - DQN training in simulation is synchronous (not via `TrainingSystem`) to maximise throughput — N `agent.train_step()` calls are made per game frame per agent. This may cause frame-rate reduction at high `train_steps` values, which is acceptable in a dedicated training mode.
+> - Enemy difficulty auto-scales: `_enemy_wave_idx = min(100, int(sim_time / 60))` — equivalent to 1 wave-level per minute of simulation.
+> - Auto-revive resets the `MinionEnv.frame_counter` so transitions from the death frame are not contaminated into the next life.
+> - The simulation requires existing DQN agents (player must have played a regular battle first). If no agents are loaded, the "Start Simulation" button is disabled and an error hint is shown.
+>
+> **Modified files**: `entities/spell_effect.py`, `scenes/battle.py`, `ui/hud.py`, `scenes/research_lab.py`, `data/config.json`
+> **New files**: `scenes/battle_simulation.py`

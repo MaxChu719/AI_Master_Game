@@ -655,12 +655,27 @@ class HUD:
 
     def _draw_spell_hint(self, surface, sw, sh):
         mode = self.scene.spell_mode
+        _cancel = "  (Right-click or ESC to cancel)"
         if mode == "healing":
-            txt = "Click on the arena to place Healing Circle  (Right-click or ESC to cancel)"
+            txt = "Click on the arena to place Healing Circle" + _cancel
             col = (80, 255, 120)
-        else:
-            txt = "Click on the arena to launch Fireball Meteor  (Right-click or ESC to cancel)"
+        elif mode == "fireball":
+            txt = "Click on the arena to launch Fireball Meteor" + _cancel
             col = (255, 160, 40)
+        elif mode == "summon_fighter":
+            txt = "Click on the arena to place Fighter Summon Portal" + _cancel
+            col = (100, 160, 255)
+        elif mode == "summon_archer":
+            txt = "Click on the arena to place Archer Summon Portal" + _cancel
+            col = (100, 255, 140)
+        elif mode == "summon_fire_mage":
+            txt = "Click on the arena to place Fire Mage Summon Portal" + _cancel
+            col = (255, 140, 60)
+        elif mode == "summon_ice_mage":
+            txt = "Click on the arena to place Ice Mage Summon Portal" + _cancel
+            col = (80, 200, 255)
+        else:
+            return
         s   = self.font_small.render(txt, True, col)
         bg  = pygame.Surface((s.get_width() + 20, s.get_height() + 8), pygame.SRCALPHA)
         bg.fill((0, 0, 0, 160))

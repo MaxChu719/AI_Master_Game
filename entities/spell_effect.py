@@ -308,10 +308,11 @@ class SummonPortal:
         "ice_mage":  ((60, 180, 255),  (180, 230, 255)),
     }
 
-    def __init__(self, pos, role: str, duration: float = 1.2):
+    def __init__(self, pos, role: str, duration: float = 1.2, mp_cost: float = 0.0):
         self.pos      = pygame.Vector2(pos)
         self.role     = role
         self.duration = duration
+        self.mp_cost  = mp_cost   # deducted from AI Master MP when spawn completes
         self.timer    = 0.0
         self.is_alive = True   # stays True until animation ends
         self.done     = False  # set True when animation completes

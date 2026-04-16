@@ -390,5 +390,17 @@
 
   "summon_portal": {
     "duration": 1.2
+  },
+
+  "battle_simulation": {
+    "_comment": "Defaults for the Research Lab Battle Simulation mode.",
+    "revive_delay":        3.0,
+    "default_train_steps": 1,
+    "default_swarm_rate":  60,
+    "default_boss_every":  120,
+    "default_lr":          0.0001,
+    "default_batch":       32,
+    "default_gamma":       0.99,
+    "default_noise_sigma": 0.5
   }
 }

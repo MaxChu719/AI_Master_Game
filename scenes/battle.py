@@ -468,39 +468,14 @@ class BattleScene(BaseScene):
             entity.max_stamina   += imr.get("stamina",  0) * rc["research_stamina_per_level"]
             entity.stamina        = entity.max_stamina
 
-    def _try_spawn_minion(self, role: str) -> bool:
-        """
-        Attempt to initiate a minion summon of `role`.
-        Deducts MP and creates a SummonPortal animation; the actual minion
-        spawns when the portal animation completes.
-        Only valid during an ACTIVE wave.
-        Returns True if the summon was initiated.
-        """
-        if self.wave_system.state != WaveState.ACTIVE:
-            return False
-
-        spawn_key     = f"summon_{role}"
-        mp_cost       = float(_SP_CFG.get(spawn_key, {}).get("mp_cost", 50))
+    def _can_summon(self, spell_name: str) -> bool:
+        """Return True if all conditions for initiating a summon are met."""
+        mp_cost       = float(_SP_CFG.get(spell_name, {}).get("mp_cost", 50))
         total_minions = (len(self.fighters) + len(self.archers) +
                          len(self.fire_mages) + len(self.ice_mages))
-
-        if total_minions >= self.spawn_cap_total:
-            return False
-        if self.mp < mp_cost:
-            return False
-
-        self.mp -= mp_cost
-
-        # Choose a random spawn position away from arena edges
-        margin = 60
-        x = random.randint(ARENA_LEFT + margin, ARENA_RIGHT - margin)
-        y = random.randint(ARENA_TOP  + margin, ARENA_BOTTOM - margin)
-
-        portal = SummonPortal((x, y), role=role, duration=_PORTAL_DURATION)
-        self.summon_portals.append(portal)
-        if self.sfx:
-            self.sfx.play("summon_portal")
-        return True
+        return (self.wave_system.state == WaveState.ACTIVE and
+                self.mp >= mp_cost and
+                total_minions < self.spawn_cap_total)
 
     def _complete_spawn(self, role: str, pos) -> None:
         """Actually spawn the minion after the portal animation completes."""
@@ -550,17 +525,7 @@ class BattleScene(BaseScene):
                 return
             # Check spell icon hits (includes summon spells)
             spell = self.hud.hit_test_spell_panel(pos)
-            if spell in ("summon_fighter", "summon_archer",
-                         "summon_fire_mage", "summon_ice_mage"):
-                role_map = {
-                    "summon_fighter":   "fighter",
-                    "summon_archer":    "archer",
-                    "summon_fire_mage": "fire_mage",
-                    "summon_ice_mage":  "ice_mage",
-                }
-                self._try_spawn_minion(role_map[spell])
-                return
-            elif spell is not None:
+            if spell is not None:
                 self._activate_spell(spell)
                 return
             # Spell placement (if a spell is selected)
@@ -577,7 +542,7 @@ class BattleScene(BaseScene):
         return ARENA_LEFT <= x <= ARENA_RIGHT and ARENA_TOP <= y <= ARENA_BOTTOM
 
     def _activate_spell(self, spell_name: str):
-        """Toggle or set spell selection mode."""
+        """Toggle or set spell selection mode (healing, fireball, or summon_*)."""
         if self.spell_mode == spell_name:
             self.spell_mode = None
             return
@@ -592,6 +557,9 @@ class BattleScene(BaseScene):
             cost = CFG["spells"]["fireball"]["mp_cost"]
             if self.mp >= cost and self._fb_cd <= 0:
                 self.spell_mode = "fireball"
+        elif spell_name.startswith("summon_"):
+            if self._can_summon(spell_name):
+                self.spell_mode = spell_name
 
     def _cast_spell(self, pos):
         am  = self.game_manager.save_data.get("ai_master", {}) if self.game_manager.save_data else {}
@@ -626,6 +594,23 @@ class BattleScene(BaseScene):
             pending  = FireballPending(pos, fb_rad, flight_t)
             self.spell_effects.append(pending)
             self._pending_fireball = (pending, fb_dmg, fb_rad)
+            self.spell_mode = None
+
+        elif self.spell_mode is not None and self.spell_mode.startswith("summon_"):
+            spell_name = self.spell_mode
+            # Re-check all conditions — wave may have ended or MP may have changed
+            if not self._can_summon(spell_name):
+                self.spell_mode = None
+                return
+            mp_cost = float(_SP_CFG.get(spell_name, {}).get("mp_cost", 50))
+            role    = spell_name[len("summon_"):]   # "fighter", "archer", etc.
+            # MP is NOT deducted here — it is deducted when the portal animation
+            # completes and the minion is successfully instantiated.
+            portal = SummonPortal(pos, role=role, duration=_PORTAL_DURATION,
+                                  mp_cost=mp_cost)
+            self.summon_portals.append(portal)
+            if self.sfx:
+                self.sfx.play("summon_portal")
             self.spell_mode = None
 
     def _process_key(self, key: int):
@@ -1012,7 +997,16 @@ class BattleScene(BaseScene):
         for portal in self.summon_portals:
             portal.update(game_dt)
             if portal.done:
-                self._complete_spawn(portal.role, portal.pos)
+                # Deduct MP and spawn only if the wave is still active and the
+                # player still has enough MP.  This fixes the bug where the wave
+                # ends while a portal is animating, causing MP loss with no spawn.
+                total_now = (len(self.fighters) + len(self.archers) +
+                             len(self.fire_mages) + len(self.ice_mages))
+                if (self.wave_system.state == WaveState.ACTIVE and
+                        self.mp >= portal.mp_cost and
+                        total_now < self.spawn_cap_total):
+                    self.mp -= portal.mp_cost
+                    self._complete_spawn(portal.role, portal.pos)
         self.summon_portals = [p for p in self.summon_portals if p.is_alive]
 
         # ── Creeper explosions ────────────────────────────────────────────
