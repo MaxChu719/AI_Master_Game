@@ -257,6 +257,7 @@ def _mage_preset_action(obs: np.ndarray) -> int:
 
     dx_n, dy_n = enemies_rel[0]
     dist_n = math.sqrt(dx_n ** 2 + dy_n ** 2)
+    stamina_norm = float(obs[3])
 
     # Flee if too close
     too_close = [(dx, dy) for dx, dy in enemies_rel
@@ -268,8 +269,8 @@ def _mage_preset_action(obs: np.ndarray) -> int:
         flee_dy = -avg_dy + wall_ry
         return _vec_to_dir_index(flee_dx, flee_dy, _MOVE_VECS_8)
 
-    # Shoot if within range (stop + aim at nearest enemy)
-    if dist_n <= _MAGE_SHOOT_R:
+    # Shoot if within range and have enough MP (stamina > 25%)
+    if dist_n <= _MAGE_SHOOT_R and stamina_norm > 0.25:
         return 8 + _vec_to_dir_index(dx_n, dy_n, _FIGHTER_ATTACK_DIRS)
 
     # Approach

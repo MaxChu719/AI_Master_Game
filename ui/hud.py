@@ -570,7 +570,10 @@ class HUD:
                 alive_col = (80, 180, 255)
 
             if m.is_alive:
-                txt   = f"{role_lbl}: {m.hp}/{m.max_hp} HP"
+                if role_lbl in ("FM", "IM"):
+                    txt = f"{role_lbl}: {m.hp}/{m.max_hp}HP  {m.stamina:.0f}MP"
+                else:
+                    txt = f"{role_lbl}: {m.hp}/{m.max_hp} HP"
                 lbl_c = alive_col
             else:
                 txt   = f"{role_lbl}: DEAD"

@@ -51,9 +51,11 @@ class FireMage:
         self.knockback_vel  = pygame.Vector2(0, 0)
         self.frozen_timer   = 0.0
 
-        # Stamina-like attribute required for vector observation compatibility
-        self.stamina        = 100.0
-        self.max_stamina    = 100.0
+        # MP (magic points) — gates shooting; regenerates over time
+        self.max_stamina    = float(_FMC.get("mp", 80.0))
+        self.stamina        = self.max_stamina
+        self.stamina_regen  = float(_FMC.get("mp_regen", 12.0))
+        self.stamina_cost   = float(_FMC.get("mp_cost", 35.0))
         self.attack_damage  = int(_FMC.get("fireball_damage", 22))
         self.attack_cooldown = self._shoot_cd
 
@@ -75,6 +77,8 @@ class FireMage:
             self._shoot_timer = max(0.0, self._shoot_timer - dt)
         if self._cast_flash > 0:
             self._cast_flash = max(0.0, self._cast_flash - dt)
+        # Regen MP
+        self.stamina = min(self.max_stamina, self.stamina + self.stamina_regen * dt)
         # Tick freeze
         if self.frozen_timer > 0:
             self.frozen_timer = max(0.0, self.frozen_timer - dt)
@@ -122,7 +126,7 @@ class FireMage:
         """DQN-directed shoot: aim at nearest enemy within a 90° cone of base_angle.
         Falls back to nearest enemy overall if none are in the cone."""
         from entities.mage_projectile import FireMageFireball
-        if self._shoot_timer > 0:
+        if self._shoot_timer > 0 or self.stamina < self.stamina_cost:
             return None
 
         candidates = [e for e in enemies if e.is_alive
@@ -148,6 +152,7 @@ class FireMage:
         self._shoot_timer = self._shoot_cd
         self._cast_flash  = 0.35
         self._cast_angle  = angle
+        self.stamina     -= self.stamina_cost
 
         return FireMageFireball(
             pos=(self.pos.x, self.pos.y),
@@ -157,7 +162,7 @@ class FireMage:
 
     def try_shoot(self, enemies: list, boss=None) -> "FireMageFireball | None":
         from entities.mage_projectile import FireMageFireball
-        if self._shoot_timer > 0:
+        if self._shoot_timer > 0 or self.stamina < self.stamina_cost:
             return None
 
         candidates = [e for e in enemies if e.is_alive
@@ -175,6 +180,7 @@ class FireMage:
         self._shoot_timer = self._shoot_cd
         self._cast_flash  = 0.35
         self._cast_angle  = angle
+        self.stamina     -= self.stamina_cost
 
         return FireMageFireball(
             pos=(self.pos.x, self.pos.y),
@@ -255,3 +261,12 @@ class FireMage:
         if fw > 0:
             col = (50, 200, 80) if self.hp > self.max_hp * 0.4 else (220, 100, 30)
             pygame.draw.rect(surface, col, (bx, by, fw, bh))
+
+        # MP bar (above HP bar — magenta/purple)
+        mp_by = by - 6
+        pygame.draw.rect(surface, (50, 10, 50), (bx, mp_by, bw, bh))
+        mp_fill = int(bw * max(0, self.stamina) / max(1, self.max_stamina))
+        if mp_fill > 0:
+            ratio = self.stamina / self.max_stamina
+            mp_col = (int(200 * ratio + 55), int(20 * ratio), int(220 * ratio))
+            pygame.draw.rect(surface, mp_col, (bx, mp_by, mp_fill, bh))

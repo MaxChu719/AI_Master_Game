@@ -222,7 +222,7 @@ def main():
 |---|---|
 | `MainMenuScene` | Start New Game (name input, override confirm) / Load Saved Game / Quit |
 | `LoadingScene` | Animated loading screen (spinning arc + dots) shown while `new_game()` or `load_save()` runs in a background thread; transitions to ResearchLab when done |
-| `ResearchLabScene` | 2-tab upgrade screen: AI Minions (4-column layout: Fighter, Archer, Fire Mage, Ice Mage), AI Master; Memory Replay training UI trains all 4 agents; "Start Battle" pushes TrainingSetupScene |
+| `ResearchLabScene` | 2-tab upgrade screen: AI Minions (4-column layout: Fighter, Archer, Fire Mage, Ice Mage — all 5 stats each), AI Master; Memory Replay training UI trains all 4 agents; "Start Battle" pushes TrainingSetupScene |
 | `TrainingSetupScene` | Pre-battle config: Mode (DQN Training / Preset+Train), LR, Warmup Preset Ratio, Min Buffer, Target Update Freq, Batch Size — applies to all agents before launching battle |
 | `BattleScene` | Core battle scene — wave combat + live Rainbow DQN training; returns to Research Lab on end |
 
@@ -269,7 +269,8 @@ def main():
 - `update_velocity(enemies, boss)` used as heuristic fallback when agent is None
 - `try_shoot_aimed(base_angle, enemies, boss)` fires a `FireMageFireball` toward nearest enemy within a 90° cone of the DQN-chosen shoot direction; falls back to `try_shoot()` when no agent
 - Fireball explodes on hit: `MageExplosion` deals AoE damage (75 px radius, 22 base) + applies **Burn** status (8 DPS for 3s) to all enemies in blast
-- `last_action`, `knockback_vel`, `frozen_timer`, `stamina`/`max_stamina` attributes present for system/env compatibility
+- **MP**: 80 base, regen 12/s, cost 35/shot — shooting is gated on MP; bar drawn above HP bar (magenta/purple); upgradeable in Research Lab (+20 MP per level)
+- `last_action`, `knockback_vel`, `frozen_timer`, `stamina`/`max_stamina`/`stamina_regen`/`stamina_cost` attributes; `stamina` = MP for vector obs compatibility
 - **Dead state**: tombstone with orange-tinted "FM" label
 
 ### Ice Mage Minion (`entities/ice_mage.py`)
@@ -279,7 +280,8 @@ def main():
 - **Rainbow DQN** (16 actions: 8 move + 8 shoot directions); shared `game_manager.ice_mage_agent`
 - `try_shoot_aimed(base_angle, enemies, boss)` fires an `IceMageIceball` toward nearest enemy within a 90° cone; falls back to `try_shoot()` when no agent
 - Iceball hit: 15 direct damage + applies **Freeze** status (`frozen_timer = 2.0s`) — frozen enemies cannot move for the duration
-- `last_action` attribute updated each frame from DQN action selection
+- **MP**: 80 base, regen 10/s, cost 35/shot — shooting is gated on MP; bar drawn above HP bar (cyan/teal); upgradeable in Research Lab (+20 MP per level)
+- `last_action`, `stamina`/`max_stamina`/`stamina_regen`/`stamina_cost` attributes; `stamina` = MP for vector obs compatibility
 - **Dead state**: tombstone with blue-tinted "IM" label
 
 ### Swarm Enemy (`entities/enemy.py`)
@@ -1026,22 +1028,23 @@ numpy>=1.26.0             # Array operations
 
 ## 16. Last Implementation Notes
 
-> **Fire Mage + Ice Mage Rainbow DQN integration (completed):**
+> **MP system for Fire Mage and Ice Mage (completed):**
 >
-> **Problem**: Fire Mage and Ice Mage had no DQN brain (heuristic-only), no upgrade columns in the Research Lab, and no HUD telemetry panel.
+> **Problem**: Fire Mage and Ice Mage had a dummy `stamina = 100` field that was never depleted or regenerated. Shooting was not gated on any resource, and neither mage had an upgradeable MP stat in the Research Lab.
 >
 > **Changes:**
-> - `config.json` — added `rewards.fire_mage` and `rewards.ice_mage` reward configs; added `preset_policy.mage_*` params for warmup heuristic.
-> - `ai/dqn.py` — added `MAGE_ACTION_TO_DIRECTION`, `MAGE_ACTION_IS_ATTACK` constants (16-action layout mirrors Fighter); added `_mage_preset_action()` and wired it into `DQNAgent.preset_action()` for both mage roles.
-> - `ai/minion_env.py` — extended `get_reward()` to handle `fire_mage` and `ice_mage` roles using new `fire_mage_damage`/`ice_mage_damage` etc. events.
-> - `entities/fire_mage.py` and `entities/ice_mage.py` — added `last_action = 0`; added `try_shoot_aimed(base_angle, enemies, boss)` that fires at the nearest enemy within a 90° cone of the DQN-chosen direction.
-> - `engine/game_manager.py` — added `fire_mage_agent`, `ice_mage_agent` on GameManager; extended `_DEFAULT_RESEARCH`, `_DEFAULT_STATS`, save structure, and `init_agents()` to handle all 4 agents.
-> - `scenes/battle.py` — full DQN training loop for fire mages and ice mages (obs sampling, action dispatch, reward accumulation, buffer store, training thread scheduling, checkpoint + session buffer saving); fixed `_save_run_result()` to use `self.fire_mage_kills/damage` and `self.ice_mage_kills/damage`.
-> - `scenes/research_lab.py` — rewritten to a 4-column AI Minions tab (Fighter, Archer, Fire Mage, Ice Mage); mages use `MAGE_STATS` (4 stats, no Stamina); keyboard nav cycles through all 4 columns; Memory Replay now trains all 4 agents; result shows 4-line F/A/FM/IM summary.
-> - `ui/hud.py` — `_draw_ai_panel()` now shows all 4 brain panels (Fighter, Archer, FireMage, IceMage) with shared `_agent_mode_loss()` helper.
+> - `config.json` — added `mp`, `mp_regen`, `mp_cost` to `fire_mage` (80 MP, 12/s, 35/shot) and `ice_mage` (80 MP, 10/s, 35/shot) sections.
+> - `entities/fire_mage.py` — replaced dummy stamina with real MP (`max_stamina`, `stamina_regen`, `stamina_cost` from config); `tick()` now regenerates MP each frame; `try_shoot_aimed()` and `try_shoot()` gate on `stamina >= stamina_cost` and deduct on fire; `draw()` now renders a magenta/purple MP bar above the HP bar.
+> - `entities/ice_mage.py` — same as fire_mage; MP bar is cyan/teal.
+> - `engine/game_manager.py` — added `"stamina": 0` to `_DEFAULT_RESEARCH` for both `fire_mage` and `ice_mage` (enables save compatibility for the new MP upgrade slot).
+> - `scenes/research_lab.py` — added `("MP", "stamina")` as 5th entry in `MAGE_STATS`; added `"+20 max MP per level"` to `_MAGE_STAT_EFFECTS`. Both mages now have 5 upgrade rows (same as Fighter/Archer).
+> - `scenes/battle.py` — `_apply_research()` and `_apply_research_single()` now apply `research_stamina_per_level` upgrades to mage `max_stamina`/`stamina` for both fire and ice mage.
+> - `ai/dqn.py` — `_mage_preset_action()` now checks `stamina_norm > 0.25` before choosing a shoot action (same pattern as archer preset).
+> - `ui/hud.py` — mage entries in the bottom-right minion stack panel now show `HP  XMP` instead of HP alone.
 >
-> **Modified files**: `config.json`, `ai/dqn.py`, `ai/minion_env.py`, `entities/fire_mage.py`, `entities/ice_mage.py`, `engine/game_manager.py`, `scenes/battle.py`, `scenes/research_lab.py`, `ui/hud.py`
+> **Modified files**: `config.json`, `entities/fire_mage.py`, `entities/ice_mage.py`, `engine/game_manager.py`, `scenes/research_lab.py`, `scenes/battle.py`, `ai/dqn.py`, `ui/hud.py`
 >
-> **Known issues / design notes:**
-> - Mage reward function uses per-step counters (`_fm_damage_step`, `_im_damage_step`) rather than per-projectile ownership; this means all fire mages in the scene share a single damage signal that frame. With one agent shared across all mages this is correct behavior.
-> - The HUD bottom-left panel is taller now (13+ lines); on very small screens it may overlap the spell panel. Panel height is computed dynamically so it will always fit if the window is tall enough.
+> **Design notes:**
+> - `stamina`/`max_stamina` field names are retained (not renamed to `mp`) for vector observation compatibility — `minion_env.py` reads `[3] self_stamina_norm` which now accurately reflects the mage's current MP fraction.
+> - At base values, Fire Mage MP slightly depletes with sustained fire (net −2.5 MP/cycle at 2.5s CD). Ice Mage barely sustains (net −5 MP/cycle at 3.0s CD). Both recover within ~7s from empty.
+> - Existing saves without the `stamina` research key will load cleanly — `load_save()` fills missing keys with 0 via `setdefault`.

@@ -9,8 +9,8 @@ _SAVES_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "saves")
 _DEFAULT_RESEARCH = {
     "fighter":   {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
     "archer":    {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
-    "fire_mage": {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0},
-    "ice_mage":  {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0},
+    "fire_mage": {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
+    "ice_mage":  {"hp": 0, "attack": 0, "move_speed": 0, "attack_speed": 0, "stamina": 0},
 }
 
 _DEFAULT_AI_MASTER = {

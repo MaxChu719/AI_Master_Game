@@ -337,7 +337,10 @@
     "fireball_damage": 22,
     "fireball_explosion_radius": 75,
     "burn_dps": 8.0,
-    "burn_duration": 3.0
+    "burn_duration": 3.0,
+    "mp": 80.0,
+    "mp_regen": 12.0,
+    "mp_cost": 35.0
   },
 
   "ice_mage": {
@@ -350,7 +353,10 @@
     "iceball_cooldown": 3.0,
     "iceball_speed": 290.0,
     "iceball_damage": 15,
-    "freeze_duration": 2.0
+    "freeze_duration": 2.0,
+    "mp": 80.0,
+    "mp_regen": 10.0,
+    "mp_cost": 35.0
   },
 
   "slime": {

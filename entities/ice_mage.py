@@ -50,9 +50,11 @@ class IceMage:
         self.knockback_vel  = pygame.Vector2(0, 0)
         self.frozen_timer   = 0.0
 
-        # Vector obs compat
-        self.stamina        = 100.0
-        self.max_stamina    = 100.0
+        # MP (magic points) — gates shooting; regenerates over time
+        self.max_stamina    = float(_IMC.get("mp", 80.0))
+        self.stamina        = self.max_stamina
+        self.stamina_regen  = float(_IMC.get("mp_regen", 10.0))
+        self.stamina_cost   = float(_IMC.get("mp_cost", 35.0))
         self.attack_damage  = int(_IMC.get("iceball_damage", 15))
         self.attack_cooldown = self._shoot_cd
 
@@ -72,6 +74,8 @@ class IceMage:
             self._shoot_timer = max(0.0, self._shoot_timer - dt)
         if self._cast_flash > 0:
             self._cast_flash = max(0.0, self._cast_flash - dt)
+        # Regen MP
+        self.stamina = min(self.max_stamina, self.stamina + self.stamina_regen * dt)
         if self.frozen_timer > 0:
             self.frozen_timer = max(0.0, self.frozen_timer - dt)
 
@@ -112,7 +116,7 @@ class IceMage:
     def try_shoot_aimed(self, base_angle: float, enemies: list, boss=None) -> "IceMageIceball | None":
         """DQN-directed shoot: aim at nearest enemy within a 90° cone of base_angle."""
         from entities.mage_projectile import IceMageIceball
-        if self._shoot_timer > 0:
+        if self._shoot_timer > 0 or self.stamina < self.stamina_cost:
             return None
 
         candidates = [e for e in enemies if e.is_alive
@@ -138,6 +142,7 @@ class IceMage:
         self._shoot_timer = self._shoot_cd
         self._cast_flash  = 0.35
         self._cast_angle  = angle
+        self.stamina     -= self.stamina_cost
 
         return IceMageIceball(
             pos=(self.pos.x, self.pos.y),
@@ -147,7 +152,7 @@ class IceMage:
 
     def try_shoot(self, enemies: list, boss=None) -> "IceMageIceball | None":
         from entities.mage_projectile import IceMageIceball
-        if self._shoot_timer > 0:
+        if self._shoot_timer > 0 or self.stamina < self.stamina_cost:
             return None
 
         candidates = [e for e in enemies if e.is_alive
@@ -165,6 +170,7 @@ class IceMage:
         self._shoot_timer = self._shoot_cd
         self._cast_flash  = 0.35
         self._cast_angle  = angle
+        self.stamina     -= self.stamina_cost
 
         return IceMageIceball(
             pos=(self.pos.x, self.pos.y),
@@ -243,3 +249,12 @@ class IceMage:
         if fw > 0:
             col = (60, 180, 255) if self.hp > self.max_hp * 0.4 else (180, 100, 220)
             pygame.draw.rect(surface, col, (bx, by, fw, bh))
+
+        # MP bar (above HP bar — cyan/teal)
+        mp_by = by - 6
+        pygame.draw.rect(surface, (10, 30, 50), (bx, mp_by, bw, bh))
+        mp_fill = int(bw * max(0, self.stamina) / max(1, self.max_stamina))
+        if mp_fill > 0:
+            ratio = self.stamina / self.max_stamina
+            mp_col = (int(20 * ratio), int(180 * ratio + 40), int(220 * ratio + 35))
+            pygame.draw.rect(surface, mp_col, (bx, mp_by, mp_fill, bh))

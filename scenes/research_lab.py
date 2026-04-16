@@ -24,12 +24,13 @@ STATS = [
     ("Stamina",     "stamina"),
 ]
 
-# Fire Mage / Ice Mage: 4 stats (no Stamina; Atk Speed = Shoot CD)
+# Fire Mage / Ice Mage: 5 stats (includes MP; Atk Speed = Shoot CD)
 MAGE_STATS = [
     ("HP",          "hp"),
     ("Attack",      "attack"),
     ("Move Speed",  "move_speed"),
     ("Shoot CD",    "attack_speed"),
+    ("MP",          "stamina"),
 ]
 
 _MINIONS       = ["fighter", "archer", "fire_mage", "ice_mage"]
@@ -48,6 +49,7 @@ _MAGE_STAT_EFFECTS = [
     "+5 attack damage per level",
     "+20 move speed per level",
     "-0.05 s shoot cooldown per level",
+    "+20 max MP per level",
 ]
 
 

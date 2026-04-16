@@ -405,6 +405,8 @@ class BattleScene(BaseScene):
             cd_red = fmr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
             fm._shoot_cd     = max(0.5, fm._shoot_cd - cd_red)
             fm.attack_cooldown = fm._shoot_cd
+            fm.max_stamina   += fmr.get("stamina",   0) * rc["research_stamina_per_level"]
+            fm.stamina        = fm.max_stamina
 
         imr = r.get("ice_mage", {})
         for im in self.ice_mages:
@@ -415,6 +417,8 @@ class BattleScene(BaseScene):
             cd_red = imr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
             im._shoot_cd     = max(0.5, im._shoot_cd - cd_red)
             im.attack_cooldown = im._shoot_cd
+            im.max_stamina   += imr.get("stamina",   0) * rc["research_stamina_per_level"]
+            im.stamina        = im.max_stamina
 
     def _apply_research_single(self, entity, role: str):
         """Apply research upgrades to a single newly-spawned minion."""
@@ -450,6 +454,8 @@ class BattleScene(BaseScene):
             cd_red = fmr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
             entity._shoot_cd     = max(0.5, entity._shoot_cd - cd_red)
             entity.attack_cooldown = entity._shoot_cd
+            entity.max_stamina   += fmr.get("stamina",  0) * rc["research_stamina_per_level"]
+            entity.stamina        = entity.max_stamina
         elif role == "ice_mage":
             imr = r.get("ice_mage", {})
             entity.max_hp       += imr.get("hp",         0) * rc["research_hp_per_level"]
@@ -459,6 +465,8 @@ class BattleScene(BaseScene):
             cd_red = imr.get("attack_speed", 0) * rc["research_atk_speed_per_level"]
             entity._shoot_cd     = max(0.5, entity._shoot_cd - cd_red)
             entity.attack_cooldown = entity._shoot_cd
+            entity.max_stamina   += imr.get("stamina",  0) * rc["research_stamina_per_level"]
+            entity.stamina        = entity.max_stamina
 
     def _try_spawn_minion(self, role: str) -> bool:
         """
